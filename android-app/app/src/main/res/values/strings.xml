@@ -1,0 +1,9 @@
+<resources>
+    <string name="app_name">HomeCall</string>
+    <string name="channel_presence_name">HomeCall Active Status</string>
+    <string name="channel_presence_desc">Keeps HomeCall permanently online for incoming calls</string>
+    <string name="channel_calls_name">Incoming Voice Calls</string>
+    <string name="channel_calls_desc">Real-time incoming call alerts with ringtone</string>
+    <string name="action_answer">Answer</string>
+    <string name="action_decline">Decline</string>
+</resources>

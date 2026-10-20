@@ -18,5 +18,8 @@
     "opus"
   ],
   "author": "",
-  "license": "MIT"
+  "license": "MIT",
+  "devDependencies": {
+    "agora-token": "^2.0.7"
+  }
 }

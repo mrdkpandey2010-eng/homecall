@@ -13,3 +13,8 @@ Thumbs.db
 .vscode/
 .idea/
 *.log
+
+# Android build outputs
+android-app/**/build/
+android-app/.gradle/
+android-app/local.properties
