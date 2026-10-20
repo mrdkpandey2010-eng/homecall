@@ -1,7 +1,7 @@
 /**
  * HomeCall - Zero-Login High Definition Voice Calling Application
  * Powered by Agora RTC SDK v4 & Firebase Realtime Database
- * Dual-Engine Redundancy: Agora SD-RTN + WebRTC Opus HD PeerConnection
+ * Seamless Single-Pipeline Audio with Android Native VoIP Kernel Integration
  */
 
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
@@ -23,7 +23,6 @@ import { CONFIG as DEFAULT_CONFIG } from "./config.js";
 // 1. INITIALIZATION & ZERO-LOGIN IDENTITY
 // ==========================================
 
-// Check if credentials override exists in localStorage
 let customConfig = null;
 try {
   const saved = localStorage.getItem("app_credentials_override");
@@ -60,11 +59,9 @@ if (window.AndroidBridge && typeof window.AndroidBridge.onUserIdReady === 'funct
   } catch (e) {}
 }
 
-// Display current User ID in UI
 const currentUserIdEl = document.getElementById("current-user-id");
 if (currentUserIdEl) currentUserIdEl.textContent = myUserId;
 
-// Copy ID to clipboard
 const copyBtn = document.getElementById("btn-copy-id");
 if (copyBtn) {
   copyBtn.addEventListener("click", async () => {
@@ -97,7 +94,6 @@ const connectedRef = db ? ref(db, ".info/connected") : null;
 const allUsersRef = db ? ref(db, "users") : null;
 const myIncomingCallRef = db ? ref(db, `calls/${myUserId}`) : null;
 
-// Track user connection status with onDisconnect hook
 if (connectedRef && myPresenceRef) {
   onValue(connectedRef, (snapshot) => {
     if (snapshot.val() === true) {
@@ -114,7 +110,6 @@ if (connectedRef && myPresenceRef) {
   });
 }
 
-// Ensure offline status on window unload / pagehide
 window.addEventListener("beforeunload", () => {
   if (db && myUserId) {
     try {
@@ -126,7 +121,6 @@ window.addEventListener("beforeunload", () => {
   }
 });
 
-// Periodic heartbeat (every 25 seconds)
 setInterval(() => {
   if (db && myUserId) {
     try {
@@ -138,11 +132,9 @@ setInterval(() => {
   }
 }, 25000);
 
-// Users Directory Cache & Live Dashboard
 const usersCache = new Map();
 let searchQuery = "";
 
-// Search input live filtering
 const searchInputEl = document.getElementById("input-search-users");
 if (searchInputEl) {
   searchInputEl.addEventListener("input", (e) => {
@@ -174,14 +166,12 @@ function renderUsersDashboard() {
 
   container.innerHTML = "";
 
-  // Count active online users
   let onlineCount = 0;
   usersCache.forEach((user, uid) => {
     if (uid !== myUserId && user.status === "online") onlineCount++;
   });
   if (countBadge) countBadge.textContent = `${onlineCount} Online`;
 
-  // Filter entries according to search query
   const entries = Array.from(usersCache.entries()).filter(([userId]) => {
     if (!searchQuery) return true;
     return userId.toLowerCase().includes(searchQuery);
@@ -194,7 +184,6 @@ function renderUsersDashboard() {
     if (emptyState) emptyState.classList.add("hidden");
   }
 
-  // Sort: Current user first, then Online users, then Offline
   const sortedUsers = entries.sort(([idA, userA], [idB, userB]) => {
     if (idA === myUserId) return -1;
     if (idB === myUserId) return 1;
@@ -294,7 +283,7 @@ function getAudioContext() {
     if (AudioContextClass) audioCtx = new AudioContextClass();
   }
   if (audioCtx && audioCtx.state === "suspended") {
-    audioCtx.resume();
+    audioCtx.resume().catch(() => {});
   }
   return audioCtx;
 }
@@ -384,17 +373,51 @@ function playIncomingRingtone() {
 
 function stopRingtone() {
   if (ringtoneOscillator) {
-    ringtoneOscillator.stop();
+    try {
+      ringtoneOscillator.stop();
+    } catch (e) {}
     ringtoneOscillator = null;
+  }
+  // Suspend WebAudio context so it yields audio hardware completely to the call
+  if (audioCtx && audioCtx.state === "running") {
+    try {
+      audioCtx.suspend();
+    } catch (e) {}
   }
 }
 
-// Local Microphone acquisition with strict hardware constraints
+// ==========================================
+// 4. UNIFIED MICROPHONE ACQUISITION
+// ==========================================
+
 let localMediaStream = null;
+let localAgoraAudioTrack = null;
 
 async function acquireLocalMicrophone() {
-  if (localMediaStream) return localMediaStream;
+  if (localAgoraAudioTrack && localMediaStream && localMediaStream.active) {
+    return localMediaStream;
+  }
 
+  // 1. Try creating hardware audio track via Agora RTC first
+  if (typeof AgoraRTC !== "undefined") {
+    try {
+      console.log("[HomeCall] Creating Agora high_quality_stereo audio track...");
+      localAgoraAudioTrack = await AgoraRTC.createMicrophoneAudioTrack({
+        encoderConfig: "high_quality_stereo",
+        AEC: true,
+        ANS: true,
+        AGC: true
+      });
+      const rawTrack = localAgoraAudioTrack.getMediaStreamTrack();
+      localMediaStream = new MediaStream([rawTrack]);
+      updateMicStatusUI("granted");
+      return localMediaStream;
+    } catch (agoraErr) {
+      console.warn("[HomeCall] Agora microphone creation error, trying native getUserMedia:", agoraErr);
+    }
+  }
+
+  // 2. Fallback to standard getUserMedia
   const constraints = {
     audio: {
       echoCancellation: true,
@@ -412,16 +435,15 @@ async function acquireLocalMicrophone() {
 }
 
 // ==========================================
-// 4. AGORA RTC SDK v4 AUDIO INTEGRATION
+// 5. AGORA RTC SDK v4 AUDIO INTEGRATION
 // ==========================================
 
 let agoraClient = null;
-let localAgoraAudioTrack = null;
 let isAgoraAudioActive = false;
 
 async function joinAgoraVoiceChannel(channelName) {
   if (typeof AgoraRTC === "undefined") {
-    console.warn("[HomeCall] AgoraRTC SDK is not available.");
+    console.warn("[HomeCall] AgoraRTC SDK not available.");
     return false;
   }
 
@@ -432,20 +454,32 @@ async function joinAgoraVoiceChannel(channelName) {
   }
 
   try {
-    console.log("[HomeCall] Initializing Agora RTC client with App ID:", appId);
+    console.log("[HomeCall] Joining Agora RTC channel:", channelName, "with App ID:", appId);
     agoraClient = AgoraRTC.createClient({ mode: "rtc", codec: "vp8" });
 
-    // Handle remote participant audio
     agoraClient.on("user-published", async (user, mediaType) => {
-      console.log("[HomeCall] Agora user-published:", user.uid, mediaType);
+      console.log("[HomeCall] Agora remote user-published:", user.uid, mediaType);
       try {
         await agoraClient.subscribe(user, mediaType);
         if (mediaType === "audio") {
+          console.log("[HomeCall] Remote audio playing via Agora SD-RTN!");
           user.audioTrack.play();
+          user.audioTrack.setVolume(100);
           isAgoraAudioActive = true;
           stopRingtone();
           updateCallStatusUI("Connected (Agora HD)", true);
-          console.log("[HomeCall] Remote audio playing via Agora SD-RTN!");
+
+          // Silence WebRTC remote audio element to prevent audio conflicts
+          const audioElement = document.getElementById("remote-audio-player");
+          if (audioElement) {
+            audioElement.pause();
+            audioElement.srcObject = null;
+          }
+
+          // Trigger Native Android VoIP Mode (Speakerphone + Hardware AEC)
+          if (window.AndroidBridge && typeof window.AndroidBridge.onCallStarted === 'function') {
+            window.AndroidBridge.onCallStarted(currentCallPartnerId || String(user.uid));
+          }
         }
       } catch (subErr) {
         console.error("[HomeCall] Agora subscription error:", subErr);
@@ -463,23 +497,31 @@ async function joinAgoraVoiceChannel(channelName) {
       }
     });
 
-    // Join channel (token=null for testing mode)
+    // Join Agora channel
     await agoraClient.join(appId, channelName, null, null);
-    console.log("[HomeCall] Joined Agora channel:", channelName);
+    console.log("[HomeCall] Successfully joined Agora channel:", channelName);
 
-    // Create high-quality Opus audio track
-    localAgoraAudioTrack = await AgoraRTC.createMicrophoneAudioTrack({
-      encoderConfig: "high_quality_stereo",
-      AEC: true,
-      ANS: true,
-      AGC: true
-    });
+    // Reuse existing microphone track or create one
+    if (!localAgoraAudioTrack) {
+      if (localMediaStream && localMediaStream.getAudioTracks().length > 0) {
+        localAgoraAudioTrack = AgoraRTC.createCustomAudioTrack({
+          mediaStreamTrack: localMediaStream.getAudioTracks()[0]
+        });
+      } else {
+        localAgoraAudioTrack = await AgoraRTC.createMicrophoneAudioTrack({
+          encoderConfig: "high_quality_stereo",
+          AEC: true,
+          ANS: true,
+          AGC: true
+        });
+      }
+    }
 
     await agoraClient.publish([localAgoraAudioTrack]);
-    console.log("[HomeCall] Published local microphone to Agora!");
+    console.log("[HomeCall] Published local microphone to Agora channel!");
     return true;
   } catch (err) {
-    console.warn("[HomeCall] Agora RTC connection error:", err.message);
+    console.warn("[HomeCall] Agora RTC join warning:", err.message);
     leaveAgoraVoiceChannel();
     return false;
   }
@@ -503,13 +545,13 @@ async function leaveAgoraVoiceChannel() {
 }
 
 // ==========================================
-// 5. CALL TRIGGER & SIGNALING (FIREBASE RTDB)
+// 6. CALL TRIGGER & SIGNALING (FIREBASE RTDB)
 // ==========================================
 
 let peerConnection = null;
 let currentChannelName = null;
 let currentCallPartnerId = null;
-let currentCallRole = null; // 'caller' | 'callee'
+let currentCallRole = null;
 let isCallActive = false;
 let callTimerInterval = null;
 let callStartTime = null;
@@ -537,7 +579,6 @@ async function initiateCall(targetUserId) {
     return;
   }
 
-  // Verify recipient live status in Firebase RTDB
   const targetUser = usersCache.get(targetUserId);
   if (!targetUser || targetUser.status !== "online") {
     showToast("User is offline", "warning");
@@ -549,7 +590,7 @@ async function initiateCall(targetUserId) {
   } catch (micErr) {
     console.error("[HomeCall] Mic error:", micErr);
     updateMicStatusUI("denied");
-    showToast("Microphone permission required to make a call.", "error");
+    showToast("Microphone permission required to call.", "error");
     return;
   }
 
@@ -569,20 +610,28 @@ async function initiateCall(targetUserId) {
   try {
     peerConnection = new RTCPeerConnection(rtcConfig);
 
-    localMediaStream.getTracks().forEach((track) => {
-      peerConnection.addTrack(track, localMediaStream);
-    });
+    if (localMediaStream) {
+      localMediaStream.getTracks().forEach((track) => {
+        peerConnection.addTrack(track, localMediaStream);
+      });
+    }
 
     peerConnection.ontrack = (event) => {
+      console.log("[HomeCall] WebRTC ontrack received");
       if (!isAgoraAudioActive) {
         const remoteStream = event.streams[0] || new MediaStream([event.track]);
         const audioElement = document.getElementById("remote-audio-player");
         if (audioElement) {
           audioElement.srcObject = remoteStream;
+          audioElement.volume = 1.0;
           audioElement.play().catch(() => {});
         }
         stopRingtone();
         updateCallStatusUI("Connected (Opus HD)", true);
+
+        if (window.AndroidBridge && typeof window.AndroidBridge.onCallStarted === 'function') {
+          window.AndroidBridge.onCallStarted(targetUserId);
+        }
       }
     };
 
@@ -708,20 +757,28 @@ async function acceptIncomingCall() {
   try {
     peerConnection = new RTCPeerConnection(rtcConfig);
 
-    localMediaStream.getTracks().forEach((track) => {
-      peerConnection.addTrack(track, localMediaStream);
-    });
+    if (localMediaStream) {
+      localMediaStream.getTracks().forEach((track) => {
+        peerConnection.addTrack(track, localMediaStream);
+      });
+    }
 
     peerConnection.ontrack = (event) => {
+      console.log("[HomeCall] WebRTC ontrack received");
       if (!isAgoraAudioActive) {
         const remoteStream = event.streams[0] || new MediaStream([event.track]);
         const audioElement = document.getElementById("remote-audio-player");
         if (audioElement) {
           audioElement.srcObject = remoteStream;
+          audioElement.volume = 1.0;
           audioElement.play().catch(() => {});
         }
         stopRingtone();
         updateCallStatusUI("Connected (Opus HD)", true);
+
+        if (window.AndroidBridge && typeof window.AndroidBridge.onCallStarted === 'function') {
+          window.AndroidBridge.onCallStarted(currentCallPartnerId);
+        }
       }
     };
 
@@ -788,7 +845,7 @@ async function terminateCall(notifyPeer = true) {
   stopCallTimer();
 
   // Close Agora RTC Channel
-  leaveAgoraVoiceChannel();
+  await leaveAgoraVoiceChannel();
 
   // Close WebRTC PeerConnection
   if (peerConnection) {
@@ -810,7 +867,15 @@ async function terminateCall(notifyPeer = true) {
 
   const audioElement = document.getElementById("remote-audio-player");
   if (audioElement) {
+    audioElement.pause();
     audioElement.srcObject = null;
+  }
+
+  // Reset Android AudioManager back to normal
+  if (window.AndroidBridge && typeof window.AndroidBridge.onCallEnded === "function") {
+    try {
+      window.AndroidBridge.onCallEnded();
+    } catch (e) {}
   }
 
   if (notifyPeer && db) {
@@ -842,14 +907,12 @@ async function terminateCall(notifyPeer = true) {
 function toggleMic() {
   isMicMuted = !isMicMuted;
 
-  // Toggle Agora mic track
   if (localAgoraAudioTrack) {
     try {
       localAgoraAudioTrack.setEnabled(!isMicMuted);
     } catch (e) {}
   }
 
-  // Toggle WebRTC mic track
   if (localMediaStream) {
     localMediaStream.getAudioTracks().forEach((track) => {
       track.enabled = !isMicMuted;
@@ -860,7 +923,7 @@ function toggleMic() {
 }
 
 // ==========================================
-// 6. UI HELPERS & TIMERS
+// 7. UI HELPERS & TIMERS
 // ==========================================
 
 function showActiveCallUI(partnerId, statusText) {
@@ -1001,11 +1064,10 @@ function showToast(message, type = "info") {
 }
 
 // ==========================================
-// 7. EVENT LISTENERS
+// 8. EVENT LISTENERS
 // ==========================================
 
 document.addEventListener("DOMContentLoaded", () => {
-  // Call user click delegation
   const listContainer = document.getElementById("users-list-container");
   if (listContainer) {
     listContainer.addEventListener("click", (e) => {
@@ -1018,7 +1080,6 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
-  // Mic check button
   const checkMicBtn = document.getElementById("btn-check-mic");
   if (checkMicBtn) {
     checkMicBtn.addEventListener("click", async () => {
@@ -1031,21 +1092,18 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
-  // Active call controls
   const endCallBtn = document.getElementById("btn-end-call");
   if (endCallBtn) endCallBtn.addEventListener("click", () => terminateCall(true));
 
   const toggleMicBtn = document.getElementById("btn-toggle-mic");
   if (toggleMicBtn) toggleMicBtn.addEventListener("click", toggleMic);
 
-  // Incoming call modal buttons
   const acceptBtn = document.getElementById("btn-accept-call");
   if (acceptBtn) acceptBtn.addEventListener("click", acceptIncomingCall);
 
   const declineBtn = document.getElementById("btn-decline-call");
   if (declineBtn) declineBtn.addEventListener("click", declineIncomingCall);
 
-  // Settings modal
   const openSettingsBtn = document.getElementById("btn-open-settings");
   const warningSetupBtn = document.getElementById("btn-warning-setup");
   const closeSettingsBtn = document.getElementById("btn-close-settings");

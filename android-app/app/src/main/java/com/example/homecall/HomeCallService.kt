@@ -495,6 +495,7 @@ class HomeCallService : Service() {
     private fun stopRingtoneAndVibration() {
         try {
             mediaPlayer?.stop()
+            mediaPlayer?.reset()
             mediaPlayer?.release()
             mediaPlayer = null
         } catch (e: Throwable) {}

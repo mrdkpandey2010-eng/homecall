@@ -381,11 +381,41 @@ class MainActivity : ComponentActivity() {
         @JavascriptInterface
         fun onCallStarted(partnerId: String) {
             Log.d(TAG, "Bridge: Call started with $partnerId")
+            runOnUiThread {
+                try {
+                    val audioManager = getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
+                    audioManager.mode = android.media.AudioManager.MODE_IN_COMMUNICATION
+                    audioManager.isSpeakerphoneOn = true
+                    Log.d(TAG, "AudioManager mode set to MODE_IN_COMMUNICATION (Speakerphone ON)")
+                } catch (e: Throwable) {
+                    Log.e(TAG, "Error configuring AudioManager on call start: ${e.message}")
+                }
+            }
         }
 
         @JavascriptInterface
         fun onCallEnded() {
             Log.d(TAG, "Bridge: Call ended")
+            runOnUiThread {
+                try {
+                    val audioManager = getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
+                    audioManager.mode = android.media.AudioManager.MODE_NORMAL
+                    audioManager.isSpeakerphoneOn = false
+                    Log.d(TAG, "AudioManager mode reset to MODE_NORMAL")
+                } catch (e: Throwable) {
+                    Log.e(TAG, "Error resetting AudioManager: ${e.message}")
+                }
+            }
+        }
+
+        @JavascriptInterface
+        fun setSpeakerphone(on: Boolean) {
+            runOnUiThread {
+                try {
+                    val audioManager = getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
+                    audioManager.isSpeakerphoneOn = on
+                } catch (e: Throwable) {}
+            }
         }
 
         @JavascriptInterface
