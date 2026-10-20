@@ -133,44 +133,60 @@ const usersCache = new Map();
 
 // Listen to all users presence in real-time
 if (allUsersRef) {
-  onValue(allUsersRef, (snapshot) => {
-    const data = snapshot.val() || {};
-    usersCache.clear();
+  onValue(
+    allUsersRef,
+    (snapshot) => {
+      const data = snapshot.val() || {};
+      usersCache.clear();
 
-    const userListContainer = document.getElementById("user-list");
-    const skeleton = document.getElementById("users-loading-skeleton");
-    if (skeleton) skeleton.remove();
+      const skeleton = document.getElementById("users-loading-skeleton");
+      if (skeleton) skeleton.remove();
 
-    let onlineCount = 0;
-    let offlineCount = 0;
-    const userEntries = Object.entries(data);
+      let onlineCount = 0;
+      let offlineCount = 0;
+      const userEntries = Object.entries(data);
 
-    // Update stats
-    userEntries.forEach(([id, info]) => {
-      usersCache.set(id, info);
-      if (info.status === "online") onlineCount++;
-      else offlineCount++;
-    });
+      // Update stats
+      userEntries.forEach(([id, info]) => {
+        usersCache.set(id, info);
+        if (info.status === "online") onlineCount++;
+        else offlineCount++;
+      });
 
-    const userCountBadge = document.getElementById("user-count-badge");
-    const onlineCountEl = document.getElementById("online-count");
-    const offlineCountEl = document.getElementById("offline-count");
+      const userCountBadge = document.getElementById("user-count-badge");
+      const onlineCountEl = document.getElementById("online-count");
+      const offlineCountEl = document.getElementById("offline-count");
 
-    if (userCountBadge) userCountBadge.textContent = `${userEntries.length} Total`;
-    if (onlineCountEl) onlineCountEl.textContent = onlineCount;
-    if (offlineCountEl) offlineCountEl.textContent = offlineCount;
+      if (userCountBadge) userCountBadge.textContent = `${userEntries.length} Total`;
+      if (onlineCountEl) onlineCountEl.textContent = onlineCount;
+      if (offlineCountEl) offlineCountEl.textContent = offlineCount;
 
-    // Sort: Current user first, then online users, then recently seen
-    userEntries.sort(([idA, userA], [idB, userB]) => {
-      if (idA === myUserId) return -1;
-      if (idB === myUserId) return 1;
-      if (userA.status === "online" && userB.status !== "online") return -1;
-      if (userB.status === "online" && userA.status !== "online") return 1;
-      return (userB.last_seen || 0) - (userA.last_seen || 0);
-    });
+      // Sort: Current user first, then online users, then recently seen
+      userEntries.sort(([idA, userA], [idB, userB]) => {
+        if (idA === myUserId) return -1;
+        if (idB === myUserId) return 1;
+        if (userA.status === "online" && userB.status !== "online") return -1;
+        if (userB.status === "online" && userA.status !== "online") return 1;
+        return (userB.last_seen || 0) - (userA.last_seen || 0);
+      });
 
-    renderUserDirectory(userEntries);
-  });
+      renderUserDirectory(userEntries);
+    },
+    (error) => {
+      console.error("[AnonCall] Firebase read error:", error);
+      const skeleton = document.getElementById("users-loading-skeleton");
+      if (skeleton) {
+        skeleton.innerHTML = `
+          <div class="p-4 bg-red-950/40 border border-red-500/30 rounded-xl text-center text-xs text-red-200">
+            <p class="font-bold mb-1">Firebase Connection Permission Error</p>
+            <p class="text-slate-400 mb-2">${error.message}</p>
+            <p class="text-[11px] text-amber-300">Please go to Firebase Console &gt; Realtime Database &gt; Rules, set read/write to true and click Publish.</p>
+          </div>
+        `;
+      }
+      showToast("Firebase Error: " + error.message, "error");
+    }
+  );
 }
 
 /**
