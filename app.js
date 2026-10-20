@@ -291,8 +291,13 @@ function formatLastSeen(timestamp) {
 // 3. AGORA RTC & CALL STATE MANAGEMENT
 // ==========================================
 
-// Force RTC mode and Opus codec for WhatsApp-grade voice
-const agoraClient = AgoraRTC.createClient({ mode: "rtc", codec: "opus" });
+// Force RTC mode (WebRTC audio automatically utilizes HD Opus codec)
+let agoraClient = null;
+try {
+  agoraClient = AgoraRTC.createClient({ mode: "rtc", codec: "vp8" });
+} catch (e) {
+  agoraClient = AgoraRTC.createClient({ mode: "rtc", codec: "h264" });
+}
 
 let localAudioTrack = null;
 let currentChannelName = null;
@@ -655,11 +660,12 @@ async function joinAgoraChannelAndPublish(channelName) {
     console.error("[AnonCall] Hardware mic / Agora join error:", err);
     if (
       err.code === "CAN_NOT_GET_GATEWAY_SERVER" ||
-      err.message?.includes("dynamic key") ||
+      err.message?.includes("dynamic") ||
+      err.message?.includes("static key") ||
       err.message?.includes("token")
     ) {
       showToast(
-        "Agora Token Error: In Agora Console, ensure Project authentication is 'Testing mode: APP ID only'.",
+        "Agora Error: In Agora Console, disable 'Primary Certificate' or use 'Testing mode: APP ID only'.",
         "error"
       );
     } else if (err.name === "NotAllowedError" || err.message?.includes("Permission")) {

@@ -5,8 +5,13 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>AnonCall — Zero-Login WebRTC Voice Calling</title>
   
-  <!-- Agora RTC SDK v4 -->
-  <script src="https://cdn.jsdelivr.net/npm/agora-rtc-sdk-ng@4.22.0/dist/agora-rtc-sdk-ng.js"></script>
+  <!-- Agora RTC SDK v4 (Local bundle + Official CDN fallback) -->
+  <script src="./agora-rtc-sdk.js"></script>
+  <script>
+    if (typeof AgoraRTC === "undefined") {
+      document.write('<script src="https://download.agora.io/sdk/release/AgoraRTC_N-4.22.0.js"><\\/script>');
+    }
+  </script>
   
   <!-- Tailwind CSS CDN -->
   <script src="https://cdn.tailwindcss.com"></script>
