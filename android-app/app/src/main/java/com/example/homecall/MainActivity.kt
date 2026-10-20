@@ -20,6 +20,8 @@ import android.view.ViewGroup
 import android.webkit.JavascriptInterface
 import android.webkit.PermissionRequest
 import android.webkit.WebChromeClient
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -29,8 +31,10 @@ import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
 import androidx.activity.ComponentActivity
+import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
+import androidx.webkit.WebViewAssetLoader
 
 class MainActivity : ComponentActivity() {
 
@@ -42,6 +46,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var permissionContainer: LinearLayout
     private lateinit var progressBar: ProgressBar
     private lateinit var prefs: SharedPreferences
+    private lateinit var assetLoader: WebViewAssetLoader
 
     private val requestPermissionsLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -59,6 +64,11 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
 
         prefs = getSharedPreferences(HomeCallService.PREFS_NAME, Context.MODE_PRIVATE)
+
+        // Setup AssetLoader for modern HTTPS serving of local assets (ES modules + WebRTC support)
+        assetLoader = WebViewAssetLoader.Builder()
+            .addPathHandler("/assets/", WebViewAssetLoader.AssetsPathHandler(this))
+            .build()
 
         val rootLayout = FrameLayout(this).apply {
             setBackgroundColor(Color.parseColor("#0F172A"))
@@ -92,6 +102,13 @@ class MainActivity : ComponentActivity() {
 
         setContentView(rootLayout)
 
+        // Minimize on back press instead of killing the app
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                moveTaskToBack(true)
+            }
+        })
+
         checkAndHandlePermissions()
         handleIncomingIntent(intent)
     }
@@ -108,10 +125,14 @@ class MainActivity : ComponentActivity() {
             val callerId = intent.getStringExtra(HomeCallService.EXTRA_CALLER_ID)
             Log.d(TAG, "Answering call from native intent: $callerId")
             webView.postDelayed({
-                webView.evaluateJavascript(
-                    "if (window.handleIncomingCallFromNative) { window.handleIncomingCallFromNative('${callerId ?: ""}'); } else if (window.acceptIncomingCall) { window.acceptIncomingCall(); }",
-                    null
-                )
+                try {
+                    webView.evaluateJavascript(
+                        "if (window.handleIncomingCallFromNative) { window.handleIncomingCallFromNative('${callerId ?: ""}'); } else if (window.acceptIncomingCall) { window.acceptIncomingCall(); }",
+                        null
+                    )
+                } catch (e: Throwable) {
+                    Log.e(TAG, "evaluateJavascript error on answer: ${e.message}")
+                }
             }, 800)
         }
     }
@@ -123,7 +144,6 @@ class MainActivity : ComponentActivity() {
             settings.apply {
                 javaScriptEnabled = true
                 domStorageEnabled = true
-                databaseEnabled = true
                 mediaPlaybackRequiresUserGesture = false
                 allowFileAccess = true
                 allowContentAccess = true
@@ -132,7 +152,7 @@ class MainActivity : ComponentActivity() {
                 loadWithOverviewMode = true
             }
 
-            // Grant WebRTC microphone capture without browser prompt
+            // Auto-grant WebRTC microphone capture without browser prompts
             webChromeClient = object : WebChromeClient() {
                 override fun onPermissionRequest(request: PermissionRequest?) {
                     request?.let {
@@ -149,6 +169,17 @@ class MainActivity : ComponentActivity() {
             }
 
             webViewClient = object : WebViewClient() {
+                override fun shouldInterceptRequest(
+                    view: WebView?,
+                    request: WebResourceRequest?
+                ): WebResourceResponse? {
+                    request?.url?.let {
+                        val response = assetLoader.shouldInterceptRequest(it)
+                        if (response != null) return response
+                    }
+                    return super.shouldInterceptRequest(view, request)
+                }
+
                 override fun onPageFinished(view: WebView?, url: String?) {
                     progressBar.visibility = View.GONE
                 }
@@ -157,15 +188,15 @@ class MainActivity : ComponentActivity() {
             addJavascriptInterface(AndroidBridge(), "AndroidBridge")
         }
 
-        // Load local bundled web application
-        webView.loadUrl("file:///android_asset/www/index.html")
+        // Load local bundled web application via secure HTTPS virtual domain
+        webView.loadUrl("https://appassets.androidplatform.net/assets/www/index.html")
     }
 
     private fun setupPermissionUI() {
         permissionContainer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
-            setBackgroundColor(Color.parseColor("#E60F172A")) // Semi-transparent dark
+            setBackgroundColor(Color.parseColor("#E60F172A"))
             setPadding(48, 64, 48, 64)
             visibility = View.GONE
         }
@@ -192,7 +223,7 @@ class MainActivity : ComponentActivity() {
         card.addView(title)
 
         val desc = TextView(this).apply {
-            text = "HomeCall requires the following permissions to stay permanently online and receive incoming WhatsApp-quality voice calls in realtime:"
+            text = "HomeCall requires Microphone and Notifications to stay permanently online and receive incoming WhatsApp-quality voice calls:"
             setTextColor(Color.parseColor("#94A3B8"))
             textSize = 14f
             gravity = Gravity.CENTER
@@ -203,9 +234,9 @@ class MainActivity : ComponentActivity() {
         // Item 1: Mic
         card.addView(createPermissionItem("🎙️ Microphone", "Required for WebRTC Opus HD voice speaking."))
         // Item 2: Notifications
-        card.addView(createPermissionItem("🔔 Call Notifications", "Required for WhatsApp-style incoming call ringing."))
+        card.addView(createPermissionItem("🔔 Call Notifications", "Required for WhatsApp-style incoming call alerts."))
         // Item 3: Battery Optimization
-        card.addView(createPermissionItem("⚡ 24/7 Permanent Online", "Must ignore battery saving so call receiver never gets killed."))
+        card.addView(createPermissionItem("⚡ 24/7 Permanent Online", "Keep call receiver active even when screen is off."))
 
         val grantButton = Button(this).apply {
             text = "Grant Compulsory Permissions"
@@ -214,7 +245,7 @@ class MainActivity : ComponentActivity() {
             background = GradientDrawable().apply {
                 shape = GradientDrawable.RECTANGLE
                 cornerRadius = 16f
-                setColor(Color.parseColor("#25D366")) // WhatsApp Green
+                setColor(Color.parseColor("#25D366"))
             }
             setPadding(32, 24, 32, 24)
             setOnClickListener {
@@ -256,16 +287,11 @@ class MainActivity : ComponentActivity() {
             ) == PackageManager.PERMISSION_GRANTED
         } else true
 
-        val isBatteryIgnored = isBatteryOptimizationIgnored()
-
         if (!audioGranted || !notifGranted) {
             permissionContainer.visibility = View.VISIBLE
         } else {
             permissionContainer.visibility = View.GONE
             startHomeCallForegroundService()
-            if (!isBatteryIgnored) {
-                requestIgnoreBatteryOptimization()
-            }
         }
     }
 
@@ -285,9 +311,9 @@ class MainActivity : ComponentActivity() {
         if (permissionsToRequest.isNotEmpty()) {
             requestPermissionsLauncher.launch(permissionsToRequest.toTypedArray())
         } else {
-            requestIgnoreBatteryOptimization()
             permissionContainer.visibility = View.GONE
             startHomeCallForegroundService()
+            requestIgnoreBatteryOptimization()
         }
     }
 
@@ -307,20 +333,25 @@ class MainActivity : ComponentActivity() {
                     data = Uri.parse("package:$packageName")
                 }
                 startActivity(intent)
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 Log.w(TAG, "Battery optimization intent failed: ${e.message}")
             }
         }
     }
 
     private fun startHomeCallForegroundService() {
-        val serviceIntent = Intent(this, HomeCallService::class.java).apply {
-            action = HomeCallService.ACTION_START_SERVICE
-        }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            ContextCompat.startForegroundService(this, serviceIntent)
-        } else {
-            startService(serviceIntent)
+        try {
+            val serviceIntent = Intent(this, HomeCallService::class.java).apply {
+                action = HomeCallService.ACTION_START_SERVICE
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                ContextCompat.startForegroundService(this, serviceIntent)
+            } else {
+                startService(serviceIntent)
+            }
+            Log.d(TAG, "Foreground service started from MainActivity")
+        } catch (e: Throwable) {
+            Log.e(TAG, "Failed to start foreground service: ${e.message}", e)
         }
     }
 
@@ -335,11 +366,15 @@ class MainActivity : ComponentActivity() {
             Log.d(TAG, "Bridge: onUserIdReady received $userId")
             if (userId.isNotEmpty()) {
                 prefs.edit().putString(HomeCallService.PREF_USER_ID, userId).apply()
-                val syncIntent = Intent(this@MainActivity, HomeCallService::class.java).apply {
-                    action = HomeCallService.ACTION_SYNC_USER_ID
-                    putExtra(HomeCallService.EXTRA_USER_ID, userId)
+                try {
+                    val syncIntent = Intent(this@MainActivity, HomeCallService::class.java).apply {
+                        action = HomeCallService.ACTION_SYNC_USER_ID
+                        putExtra(HomeCallService.EXTRA_USER_ID, userId)
+                    }
+                    startService(syncIntent)
+                } catch (e: Throwable) {
+                    Log.w(TAG, "Bridge syncIntent error: ${e.message}")
                 }
-                startService(syncIntent)
             }
         }
 
@@ -364,11 +399,5 @@ class MainActivity : ComponentActivity() {
         fun isBatteryOptimizationIgnored(): Boolean {
             return this@MainActivity.isBatteryOptimizationIgnored()
         }
-    }
-
-    @Suppress("DEPRECATION")
-    override fun onBackPressed() {
-        // Minimize the app instead of closing, so call receiving remains active
-        moveTaskToBack(true)
     }
 }

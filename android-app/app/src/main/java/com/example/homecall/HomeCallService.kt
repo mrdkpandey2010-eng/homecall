@@ -6,6 +6,7 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
+import android.content.pm.ServiceInfo
 import android.media.AudioAttributes
 import android.media.MediaPlayer
 import android.media.RingtoneManager
@@ -85,6 +86,7 @@ class HomeCallService : Service() {
 
     private var isRinging = false
     private var connectivityManager: ConnectivityManager? = null
+    private var isNetworkCallbackRegistered = false
 
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) {
@@ -106,40 +108,78 @@ class HomeCallService : Service() {
         prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         initUserId()
 
-        // Setup Wakelock
-        val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
-        wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "HomeCall::PresenceLock").apply {
-            setReferenceCounted(false)
-            acquire(24 * 60 * 60 * 1000L) // 24 hours safeguard
+        // 1. Safe Foreground Notification Startup (Prevents Android 14+ crashes)
+        startServiceInForeground()
+
+        // 2. Safe Wakelock Setup
+        try {
+            val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+            wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "HomeCall::PresenceLock").apply {
+                setReferenceCounted(false)
+                acquire(24 * 60 * 60 * 1000L) // 24 hours safeguard
+            }
+        } catch (e: Throwable) {
+            Log.w(TAG, "Wakelock could not be acquired: ${e.message}")
         }
 
-        // Setup Vibrator
-        vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            val vibratorManager = getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager
-            vibratorManager.defaultVibrator
-        } else {
-            @Suppress("DEPRECATION")
-            getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+        // 3. Safe Vibrator Setup
+        try {
+            vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val vibratorManager = getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager
+                vibratorManager.defaultVibrator
+            } else {
+                @Suppress("DEPRECATION")
+                getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+            }
+        } catch (e: Throwable) {
+            Log.w(TAG, "Vibrator setup error: ${e.message}")
         }
 
-        // Setup OkHttpClient
+        // 4. OkHttpClient Setup
         okHttpClient = OkHttpClient.Builder()
             .connectTimeout(15, TimeUnit.SECONDS)
             .readTimeout(0, TimeUnit.MILLISECONDS) // Indefinite for SSE
             .retryOnConnectionFailure(true)
             .build()
 
-        // Register Network Callback
-        connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-        val networkRequest = NetworkRequest.Builder()
-            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-            .build()
-        connectivityManager?.registerNetworkCallback(networkRequest, networkCallback)
+        // 5. Safe Network Callback Setup
+        try {
+            connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            val networkRequest = NetworkRequest.Builder()
+                .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                .build()
+            connectivityManager?.registerNetworkCallback(networkRequest, networkCallback)
+            isNetworkCallbackRegistered = true
+        } catch (e: Throwable) {
+            Log.w(TAG, "NetworkCallback registration error: ${e.message}")
+        }
 
-        startForeground(NOTIFICATION_PRESENCE_ID, buildPresenceNotification())
         setOnlineStatus(true)
         startHeartbeat()
         startCallListener()
+    }
+
+    private fun startServiceInForeground() {
+        val notification = buildPresenceNotification()
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(
+                    NOTIFICATION_PRESENCE_ID,
+                    notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+                )
+            } else {
+                startForeground(NOTIFICATION_PRESENCE_ID, notification)
+            }
+            Log.d(TAG, "startForeground executed successfully")
+        } catch (e: Throwable) {
+            Log.w(TAG, "startForeground with DATA_SYNC failed, trying default: ${e.message}")
+            try {
+                startForeground(NOTIFICATION_PRESENCE_ID, notification)
+            } catch (e2: Throwable) {
+                Log.e(TAG, "startForeground fallback failed: ${e2.message}", e2)
+            }
+        }
     }
 
     private fun initUserId() {
@@ -209,17 +249,14 @@ class HomeCallService : Service() {
     }
 
     private fun updatePresenceNotification() {
-        val manager = NotificationManagerCompat.from(this)
         try {
+            val manager = NotificationManagerCompat.from(this)
             manager.notify(NOTIFICATION_PRESENCE_ID, buildPresenceNotification())
-        } catch (e: SecurityException) {
-            Log.w(TAG, "Notification permission not granted yet", e)
+        } catch (e: Throwable) {
+            Log.w(TAG, "Notification update error", e)
         }
     }
 
-    /**
-     * Updates user presence in Firebase RTDB: users/{myUserId}
-     */
     private fun setOnlineStatus(online: Boolean) {
         if (myUserId.isEmpty()) return
         serviceScope.launch {
@@ -236,15 +273,12 @@ class HomeCallService : Service() {
 
                 okHttpClient.newCall(request).execute().close()
                 Log.d(TAG, "Presence updated in Firebase: $myUserId -> ${if (online) "online" else "offline"}")
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 Log.e(TAG, "Failed to update presence: ${e.message}")
             }
         }
     }
 
-    /**
-     * Heartbeat every 25 seconds keeps Firebase presence fresh
-     */
     private fun startHeartbeat() {
         heartbeatJob?.cancel()
         heartbeatJob = serviceScope.launch {
@@ -261,16 +295,13 @@ class HomeCallService : Service() {
                         .patch(body)
                         .build()
                     okHttpClient.newCall(request).execute().close()
-                } catch (e: Exception) {
+                } catch (e: Throwable) {
                     Log.w(TAG, "Heartbeat ping failed: ${e.message}")
                 }
             }
         }
     }
 
-    /**
-     * Listens to calls/{myUserId}.json via Firebase Realtime Database SSE
-     */
     private fun startCallListener() {
         if (myUserId.isEmpty()) return
         stopCallListener()
@@ -281,42 +312,45 @@ class HomeCallService : Service() {
             .header("Accept", "text/event-stream")
             .build()
 
-        val factory = EventSources.createFactory(okHttpClient)
-        eventSource = factory.newEventSource(request, object : EventSourceListener() {
-            override fun onOpen(eventSource: EventSource, response: Response) {
-                Log.d(TAG, "SSE Call Listener connected to: $sseUrl")
-            }
-
-            override fun onEvent(eventSource: EventSource, id: String?, type: String?, data: String) {
-                handleIncomingCallData(data)
-            }
-
-            override fun onClosed(eventSource: EventSource) {
-                Log.d(TAG, "SSE Call Listener closed. Reconnecting in 3s...")
-                serviceScope.launch {
-                    delay(3000)
-                    startCallListener()
+        try {
+            val factory = EventSources.createFactory(okHttpClient)
+            eventSource = factory.newEventSource(request, object : EventSourceListener() {
+                override fun onOpen(eventSource: EventSource, response: Response) {
+                    Log.d(TAG, "SSE Call Listener connected to: $sseUrl")
                 }
-            }
 
-            override fun onFailure(eventSource: EventSource, t: Throwable?, response: Response?) {
-                Log.w(TAG, "SSE Call Listener failure: ${t?.message}. Reconnecting in 5s...")
-                serviceScope.launch {
-                    delay(5000)
-                    startCallListener()
+                override fun onEvent(eventSource: EventSource, id: String?, type: String?, data: String) {
+                    handleIncomingCallData(data)
                 }
-            }
-        })
+
+                override fun onClosed(eventSource: EventSource) {
+                    Log.d(TAG, "SSE Call Listener closed. Reconnecting in 3s...")
+                    serviceScope.launch {
+                        delay(3000)
+                        startCallListener()
+                    }
+                }
+
+                override fun onFailure(eventSource: EventSource, t: Throwable?, response: Response?) {
+                    Log.w(TAG, "SSE Call Listener failure: ${t?.message}. Reconnecting in 5s...")
+                    serviceScope.launch {
+                        delay(5000)
+                        startCallListener()
+                    }
+                }
+            })
+        } catch (e: Throwable) {
+            Log.e(TAG, "Failed to start SSE Call Listener: ${e.message}")
+        }
     }
 
     private fun stopCallListener() {
-        eventSource?.cancel()
+        try {
+            eventSource?.cancel()
+        } catch (e: Throwable) {}
         eventSource = null
     }
 
-    /**
-     * Parses Firebase Realtime Database event payload
-     */
     private fun handleIncomingCallData(payload: String) {
         try {
             if (payload.trim() == "null" || payload.isEmpty()) {
@@ -327,7 +361,6 @@ class HomeCallService : Service() {
             }
 
             val json = JSONObject(payload)
-            // Firebase SSE event wrapper: { "path": "/", "data": { ... } }
             val callData = if (json.has("data")) json.optJSONObject("data") else json
 
             if (callData == null || callData.toString() == "null") {
@@ -348,14 +381,11 @@ class HomeCallService : Service() {
             } else if (status == "ended" || status == "rejected") {
                 dismissIncomingCall(notifyRemote = false)
             }
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             Log.e(TAG, "Error parsing call event: ${e.message}")
         }
     }
 
-    /**
-     * Triggers WhatsApp-Style Ringtone, Vibration, and Heads-Up / Full-Screen Notification
-     */
     private fun showIncomingCall(callerId: String) {
         isRinging = true
         startRingtoneAndVibration()
@@ -414,14 +444,13 @@ class HomeCallService : Service() {
 
         try {
             NotificationManagerCompat.from(this).notify(NOTIFICATION_INCOMING_CALL_ID, notification)
-        } catch (e: SecurityException) {
-            Log.w(TAG, "Notification permission missing", e)
+        } catch (e: Throwable) {
+            Log.w(TAG, "Notification display error: ${e.message}")
         }
 
-        // Also launch fullscreen activity directly
         try {
             startActivity(fullScreenIntent)
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             Log.e(TAG, "Failed to launch IncomingCallActivity: ${e.message}")
         }
     }
@@ -442,7 +471,7 @@ class HomeCallService : Service() {
                 prepare()
                 start()
             }
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             Log.e(TAG, "Error playing ringtone: ${e.message}")
         }
 
@@ -451,14 +480,14 @@ class HomeCallService : Service() {
                 vibrator?.vibrate(
                     VibrationEffect.createWaveform(
                         longArrayOf(0, 1000, 800, 1000, 800, 1000),
-                        0 // Loop from index 0
+                        0
                     )
                 )
             } else {
                 @Suppress("DEPRECATION")
                 vibrator?.vibrate(longArrayOf(0, 1000, 800, 1000, 800, 1000), 0)
             }
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             Log.e(TAG, "Error vibrating: ${e.message}")
         }
     }
@@ -468,23 +497,25 @@ class HomeCallService : Service() {
             mediaPlayer?.stop()
             mediaPlayer?.release()
             mediaPlayer = null
-        } catch (e: Exception) {}
+        } catch (e: Throwable) {}
 
         try {
             vibrator?.cancel()
-        } catch (e: Exception) {}
+        } catch (e: Throwable) {}
     }
 
     fun declineCall(callerId: String?) {
         stopRingtoneAndVibration()
-        NotificationManagerCompat.from(this).cancel(NOTIFICATION_INCOMING_CALL_ID)
+        try {
+            NotificationManagerCompat.from(this).cancel(NOTIFICATION_INCOMING_CALL_ID)
+        } catch (e: Throwable) {}
         isRinging = false
         currentActiveCallerId = null
 
-        // Send broadcast to dismiss fullscreen activity
-        sendBroadcast(Intent(BROADCAST_CALL_CANCELLED))
+        try {
+            sendBroadcast(Intent(BROADCAST_CALL_CANCELLED))
+        } catch (e: Throwable) {}
 
-        // Write "rejected" to Firebase RTDB node
         serviceScope.launch {
             try {
                 val json = JSONObject().apply { put("status", "rejected") }
@@ -495,7 +526,7 @@ class HomeCallService : Service() {
                     .build()
                 okHttpClient.newCall(request).execute().close()
                 Log.d(TAG, "Call rejected in Firebase RTDB")
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 Log.e(TAG, "Failed to reject call in DB: ${e.message}")
             }
         }
@@ -503,26 +534,35 @@ class HomeCallService : Service() {
 
     fun answerCall(callerId: String?) {
         stopRingtoneAndVibration()
-        NotificationManagerCompat.from(this).cancel(NOTIFICATION_INCOMING_CALL_ID)
+        try {
+            NotificationManagerCompat.from(this).cancel(NOTIFICATION_INCOMING_CALL_ID)
+        } catch (e: Throwable) {}
         isRinging = false
         currentActiveCallerId = null
 
-        // Bring MainActivity to front and trigger WebRTC answer
-        val intent = Intent(this, MainActivity::class.java).apply {
-            action = ACTION_ANSWER_CALL
-            putExtra(EXTRA_CALLER_ID, callerId)
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        try {
+            val intent = Intent(this, MainActivity::class.java).apply {
+                action = ACTION_ANSWER_CALL
+                putExtra(EXTRA_CALLER_ID, callerId)
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            }
+            startActivity(intent)
+        } catch (e: Throwable) {
+            Log.e(TAG, "Failed to launch MainActivity on answer: ${e.message}")
         }
-        startActivity(intent)
     }
 
     private fun dismissIncomingCall(notifyRemote: Boolean) {
         stopRingtoneAndVibration()
-        NotificationManagerCompat.from(this).cancel(NOTIFICATION_INCOMING_CALL_ID)
+        try {
+            NotificationManagerCompat.from(this).cancel(NOTIFICATION_INCOMING_CALL_ID)
+        } catch (e: Throwable) {}
         isRinging = false
         currentActiveCallerId = null
 
-        sendBroadcast(Intent(BROADCAST_CALL_CANCELLED))
+        try {
+            sendBroadcast(Intent(BROADCAST_CALL_CANCELLED))
+        } catch (e: Throwable) {}
     }
 
     override fun onDestroy() {
@@ -531,10 +571,15 @@ class HomeCallService : Service() {
         stopRingtoneAndVibration()
         stopCallListener()
         heartbeatJob?.cancel()
-        connectivityManager?.unregisterNetworkCallback(networkCallback)
+        if (isNetworkCallbackRegistered) {
+            try {
+                connectivityManager?.unregisterNetworkCallback(networkCallback)
+                isNetworkCallbackRegistered = false
+            } catch (e: Throwable) {}
+        }
         try {
             wakeLock?.release()
-        } catch (e: Exception) {}
+        } catch (e: Throwable) {}
         super.onDestroy()
     }
 
