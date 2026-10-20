@@ -4,16 +4,16 @@
  */
 export const CONFIG = {
   // Agora RTC App ID (From Agora Console -> Project Management)
-  AGORA_APP_ID: "YOUR_AGORA_APP_ID",
-
-  // Firebase Realtime Database Config (From Firebase Console -> Project Settings)
-  FIREBASE_CONFIG: {
-    apiKey: "YOUR_API_KEY",
-    authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
-    databaseURL: "https://YOUR_PROJECT_ID-default-rtdb.firebaseio.com",
-    projectId: "YOUR_PROJECT_ID",
-    storageBucket: "YOUR_PROJECT_ID.appspot.com",
-    messagingSenderId: "YOUR_MESSAGING_SENDER_ID",
-    appId: "YOUR_APP_ID"
-  }
+  AGORA_APP_ID: "a6f0bbf1744f4ffe85275fcae3d8858b",
+// For Firebase JS SDK v7.20.0 and later, measurementId is optional
+const firebaseConfig = {
+  apiKey: "AIzaSyC-JplyHREiWAnUJleFIus1tYfktiC-GKU",
+  authDomain: "anoncall-app.firebaseapp.com",
+  databaseURL: "https://anoncall-app-default-rtdb.firebaseio.com",
+  projectId: "anoncall-app",
+  storageBucket: "anoncall-app.firebasestorage.app",
+  messagingSenderId: "75328786966",
+  appId: "1:75328786966:web:d6d4433410c5ba825f9b37",
+  measurementId: "G-Y7C2ZZT9M6"
+}
 };
