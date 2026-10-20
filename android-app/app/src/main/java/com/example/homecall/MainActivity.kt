@@ -386,7 +386,11 @@ class MainActivity : ComponentActivity() {
                     val audioManager = getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
                     audioManager.mode = android.media.AudioManager.MODE_IN_COMMUNICATION
                     audioManager.isSpeakerphoneOn = true
-                    Log.d(TAG, "AudioManager mode set to MODE_IN_COMMUNICATION (Speakerphone ON)")
+                    val maxVoice = audioManager.getStreamMaxVolume(android.media.AudioManager.STREAM_VOICE_CALL)
+                    audioManager.setStreamVolume(android.media.AudioManager.STREAM_VOICE_CALL, maxVoice, 0)
+                    val maxMusic = audioManager.getStreamMaxVolume(android.media.AudioManager.STREAM_MUSIC)
+                    audioManager.setStreamVolume(android.media.AudioManager.STREAM_MUSIC, maxMusic, 0)
+                    Log.d(TAG, "AudioManager set: MODE_IN_COMMUNICATION (Speakerphone ON, Max Volume)")
                 } catch (e: Throwable) {
                     Log.e(TAG, "Error configuring AudioManager on call start: ${e.message}")
                 }

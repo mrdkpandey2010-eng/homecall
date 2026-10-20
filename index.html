@@ -78,8 +78,8 @@
   <!-- Toast Container -->
   <div id="toast-container" class="fixed top-4 left-4 right-4 sm:left-auto sm:right-6 sm:w-80 z-50 flex flex-col gap-2 pointer-events-none"></div>
 
-  <!-- Hidden HTML5 Audio Element for incoming stream -->
-  <audio id="remote-audio-player" autoplay playsinline class="hidden"></audio>
+  <!-- Active Offscreen HTML5 Audio Element for incoming stream -->
+  <audio id="remote-audio-player" autoplay playsinline style="position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;opacity:0.01;pointer-events:none;"></audio>
 
   <!-- Sticky Native Top App Bar -->
   <header class="sticky top-0 z-40 bg-slate-900/95 backdrop-blur-md border-b border-slate-800/80 shadow-md">
