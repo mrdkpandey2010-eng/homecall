@@ -1,0 +1,22 @@
+{
+  "name": "anoncall-webrtc",
+  "version": "1.0.0",
+  "description": "Zero-Login WebRTC Voice Calling App powered by Agora RTC SDK v4 & Firebase Realtime Database",
+  "main": "app.js",
+  "type": "module",
+  "scripts": {
+    "start": "npx serve -l 3000 .",
+    "dev": "npx serve -l 3000 .",
+    "test": "echo \"Ready\""
+  },
+  "keywords": [
+    "webrtc",
+    "agora",
+    "firebase",
+    "calling",
+    "zero-login",
+    "opus"
+  ],
+  "author": "",
+  "license": "MIT"
+}

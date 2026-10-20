@@ -1,0 +1,15 @@
+# Dependencies
+node_modules/
+
+# Environment and local configs with real secrets (keep config.example.js if needed)
+.env
+.env.local
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE and Editor files
+.vscode/
+.idea/
+*.log
