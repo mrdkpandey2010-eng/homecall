@@ -258,30 +258,23 @@ function renderUserDirectory(userEntries) {
           isSelf
             ? `<span class="text-xs text-slate-500 font-mono italic px-3 py-1">Current Device</span>`
             : `<button
+                type="button"
                 data-target-user="${userId}"
-                class="call-user-btn flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                class="call-user-btn cursor-pointer relative z-10 flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all ${
                   isOnline
                     ? "bg-emerald-600 hover:bg-emerald-500 text-white shadow-md shadow-emerald-600/20 active:scale-95"
-                    : "bg-slate-800 text-slate-500 hover:bg-slate-700/60 cursor-pointer"
+                    : "bg-slate-800 text-slate-500 hover:bg-slate-700/60"
                 }">
-                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <svg class="w-3.5 h-3.5 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" />
                 </svg>
-                Call
+                <span class="pointer-events-none">Call</span>
               </button>`
         }
       </div>
     `;
 
     container.appendChild(card);
-  });
-
-  // Attach event listeners to call buttons
-  container.querySelectorAll(".call-user-btn").forEach((btn) => {
-    btn.addEventListener("click", (e) => {
-      const targetId = e.currentTarget.getAttribute("data-target-user");
-      if (targetId) initiateCall(targetId);
-    });
   });
 }
 
@@ -514,6 +507,28 @@ async function initiateCall(targetUserId) {
     return;
   }
 
+  // Request microphone permission immediately inside this click gesture!
+  try {
+    if (!localAudioTrack) {
+      showToast("Requesting microphone permission...", "info");
+      localAudioTrack = await AgoraRTC.createMicrophoneAudioTrack({
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+        AEC: true,
+        ANS: true,
+        AGC: true,
+        encoderConfig: "high_quality_stereo"
+      });
+      updateMicStatusUI("granted");
+    }
+  } catch (micErr) {
+    console.error("[AnonCall] Microphone error on click:", micErr);
+    updateMicStatusUI("denied");
+    showToast("Microphone permission required! Please tap 'Allow' when prompted.", "error");
+    return;
+  }
+
   // Dynamically sort and join User IDs to prevent race conditions
   const channelName = [myUserId, targetUserId].sort().join("-");
 
@@ -619,27 +634,37 @@ async function joinAgoraChannelAndPublish(channelName) {
     // 1. Join channel
     await agoraClient.join(CONFIG.AGORA_APP_ID, channelName, null, myUserId);
 
-    // 2. Create microphone audio track with strict hardware constraints
-    // Suppress background room rumble, echo loops, and clipping
-    localAudioTrack = await AgoraRTC.createMicrophoneAudioTrack({
-      // W3C audio constraints
-      echoCancellation: true,
-      noiseSuppression: true,
-      autoGainControl: true,
-      // Agora RTC specific options
-      AEC: true,
-      ANS: true,
-      AGC: true,
-      encoderConfig: "high_quality_stereo"
-    });
+    // 2. Create microphone audio track if not already acquired
+    if (!localAudioTrack) {
+      localAudioTrack = await AgoraRTC.createMicrophoneAudioTrack({
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+        AEC: true,
+        ANS: true,
+        AGC: true,
+        encoderConfig: "high_quality_stereo"
+      });
+      updateMicStatusUI("granted");
+    }
 
     // 3. Publish local track
     await agoraClient.publish([localAudioTrack]);
     updateCallStatusUI("Connected (Opus HD)", true);
   } catch (err) {
     console.error("[AnonCall] Hardware mic / Agora join error:", err);
-    if (err.name === "NotAllowedError" || err.message?.includes("Permission")) {
+    if (
+      err.code === "CAN_NOT_GET_GATEWAY_SERVER" ||
+      err.message?.includes("dynamic key") ||
+      err.message?.includes("token")
+    ) {
+      showToast(
+        "Agora Token Error: In Agora Console, ensure Project authentication is 'Testing mode: APP ID only'.",
+        "error"
+      );
+    } else if (err.name === "NotAllowedError" || err.message?.includes("Permission")) {
       showToast("Microphone access is required for voice calls.", "error");
+      updateMicStatusUI("denied");
     } else {
       showToast("Audio connection error: " + err.message, "error");
     }
@@ -658,6 +683,28 @@ async function acceptIncomingCall() {
 
   isCallActive = true;
   showActiveCallUI(currentCallPartnerId, "Connecting...");
+
+  // Acquire microphone track directly inside this Accept user click gesture
+  try {
+    if (!localAudioTrack) {
+      localAudioTrack = await AgoraRTC.createMicrophoneAudioTrack({
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+        AEC: true,
+        ANS: true,
+        AGC: true,
+        encoderConfig: "high_quality_stereo"
+      });
+      updateMicStatusUI("granted");
+    }
+  } catch (micErr) {
+    console.error("[AnonCall] Mic error on accept:", micErr);
+    showToast("Microphone permission required to connect voice.", "error");
+    updateMicStatusUI("denied");
+    terminateCall(true);
+    return;
+  }
 
   try {
     // Notify caller in RTDB
@@ -1030,4 +1077,71 @@ resetConfigBtn?.addEventListener("click", () => {
   showToast("Reset to config.js defaults! Reloading...", "info");
   setTimeout(() => window.location.reload(), 600);
 });
+
+// Delegated event listener for user list (handles Call clicks reliably across re-renders)
+const userListContainer = document.getElementById("user-list");
+if (userListContainer) {
+  userListContainer.addEventListener("click", (e) => {
+    const btn = e.target.closest(".call-user-btn");
+    if (!btn) return;
+    const targetId = btn.getAttribute("data-target-user");
+    if (targetId) {
+      initiateCall(targetId);
+    }
+  });
+}
+
+// Microphone Permission Helpers & Status Indicator
+const checkMicBtn = document.getElementById("btn-check-mic");
+
+function updateMicStatusUI(state) {
+  const dot = document.getElementById("mic-status-dot");
+  const text = document.getElementById("mic-status-text");
+  if (!dot || !text) return;
+
+  if (state === "granted") {
+    dot.className = "w-2 h-2 rounded-full bg-emerald-400";
+    text.textContent = "Mic Ready ✓";
+  } else if (state === "denied") {
+    dot.className = "w-2 h-2 rounded-full bg-red-500";
+    text.textContent = "Mic Blocked ✕";
+  } else {
+    dot.className = "w-2 h-2 rounded-full bg-amber-400 animate-pulse";
+    text.textContent = "Enable Mic 🎤";
+  }
+}
+
+async function requestMicPermission() {
+  try {
+    if (!localAudioTrack) {
+      showToast("Requesting microphone permission...", "info");
+      localAudioTrack = await AgoraRTC.createMicrophoneAudioTrack({
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+        AEC: true,
+        ANS: true,
+        AGC: true,
+        encoderConfig: "high_quality_stereo"
+      });
+    }
+    updateMicStatusUI("granted");
+    showToast("Microphone ready! 🎤", "success");
+  } catch (err) {
+    console.error("Mic check error:", err);
+    updateMicStatusUI("denied");
+    showToast("Microphone permission was denied. Please allow microphone in browser.", "error");
+  }
+}
+
+checkMicBtn?.addEventListener("click", requestMicPermission);
+
+// Check permission status on startup
+if (navigator.permissions && navigator.permissions.query) {
+  navigator.permissions.query({ name: "microphone" }).then((status) => {
+    updateMicStatusUI(status.state);
+    status.onchange = () => updateMicStatusUI(status.state);
+  }).catch(() => {});
+}
+
 
