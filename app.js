@@ -1,7 +1,7 @@
 /**
- * AnonCall - Zero-Login WebRTC Voice Calling App
- * WhatsApp-grade Opus HD Calling with Firebase Realtime Database Signaling
- * Supports Direct WebRTC P2P (Google STUN) and Agora RTC v4 Fallback
+ * HomeCall - Zero-Login High Definition Voice Calling Application
+ * Powered by Agora RTC SDK v4 & Firebase Realtime Database
+ * Dual-Engine Redundancy: Agora SD-RTN + WebRTC Opus HD PeerConnection
  */
 
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
@@ -36,18 +36,14 @@ try {
 
 export const CONFIG = customConfig || DEFAULT_CONFIG;
 
-// Check if credentials have been replaced
-const isConfigured =
-  CONFIG.FIREBASE_CONFIG &&
-  CONFIG.FIREBASE_CONFIG.apiKey &&
-  CONFIG.FIREBASE_CONFIG.apiKey !== "YOUR_API_KEY";
-
-if (!isConfigured) {
-  const warningEl = document.getElementById("credentials-warning");
-  if (warningEl) warningEl.classList.remove("hidden");
-  console.warn(
-    "[AnonCall] Placeholder credentials detected. Please provide valid Firebase RTDB credentials."
-  );
+// Sync with Native Android Bridge if running inside Android APK
+if (window.AndroidBridge && typeof window.AndroidBridge.getUserId === 'function') {
+  try {
+    const bridgeId = window.AndroidBridge.getUserId();
+    if (bridgeId && /^User-\d{6}$/.test(bridgeId)) {
+      localStorage.setItem("app_user_id", bridgeId);
+    }
+  } catch (e) {}
 }
 
 // Generate or retrieve unique User ID ('User-XXXXXX')
@@ -56,6 +52,12 @@ if (!myUserId || !/^User-\d{6}$/.test(myUserId)) {
   const randomSixDigits = Math.floor(100000 + Math.random() * 900000);
   myUserId = `User-${randomSixDigits}`;
   localStorage.setItem("app_user_id", myUserId);
+}
+
+if (window.AndroidBridge && typeof window.AndroidBridge.onUserIdReady === 'function') {
+  try {
+    window.AndroidBridge.onUserIdReady(myUserId);
+  } catch (e) {}
 }
 
 // Display current User ID in UI
@@ -86,7 +88,7 @@ try {
   app = initializeApp(CONFIG.FIREBASE_CONFIG);
   db = getDatabase(app);
 } catch (err) {
-  console.error("[AnonCall] Firebase initialization error:", err);
+  console.error("[HomeCall] Firebase initialization error:", err);
   showToast("Firebase initialization error. Check config.js", "error");
 }
 
@@ -124,126 +126,123 @@ window.addEventListener("beforeunload", () => {
   }
 });
 
-// Cache of registered users for quick status validation
+// Periodic heartbeat (every 25 seconds)
+setInterval(() => {
+  if (db && myUserId) {
+    try {
+      update(ref(db, `users/${myUserId}`), {
+        status: "online",
+        last_seen: Date.now()
+      });
+    } catch (e) {}
+  }
+}, 25000);
+
+// Users Directory Cache & Live Dashboard
 const usersCache = new Map();
+let searchQuery = "";
 
-// Listen to all users presence in real-time
-if (allUsersRef) {
-  onValue(
-    allUsersRef,
-    (snapshot) => {
-      const data = snapshot.val() || {};
-      usersCache.clear();
-
-      const skeleton = document.getElementById("users-loading-skeleton");
-      if (skeleton) skeleton.remove();
-
-      let onlineCount = 0;
-      let offlineCount = 0;
-      const userEntries = Object.entries(data);
-
-      userEntries.forEach(([id, info]) => {
-        usersCache.set(id, info);
-        if (info.status === "online") onlineCount++;
-        else offlineCount++;
-      });
-
-      const userCountBadge = document.getElementById("user-count-badge");
-      const onlineCountEl = document.getElementById("online-count");
-      const offlineCountEl = document.getElementById("offline-count");
-
-      if (userCountBadge) userCountBadge.textContent = `${userEntries.length} Total`;
-      if (onlineCountEl) onlineCountEl.textContent = onlineCount;
-      if (offlineCountEl) offlineCountEl.textContent = offlineCount;
-
-      // Sort: Current user first, then online users, then recently seen
-      userEntries.sort(([idA, userA], [idB, userB]) => {
-        if (idA === myUserId) return -1;
-        if (idB === myUserId) return 1;
-        if (userA.status === "online" && userB.status !== "online") return -1;
-        if (userB.status === "online" && userA.status !== "online") return 1;
-        return (userB.last_seen || 0) - (userA.last_seen || 0);
-      });
-
-      renderUserDirectory(userEntries);
-    },
-    (error) => {
-      console.error("[AnonCall] Firebase read error:", error);
-      const skeleton = document.getElementById("users-loading-skeleton");
-      if (skeleton) {
-        skeleton.innerHTML = `
-          <div class="p-4 bg-red-950/40 border border-red-500/30 rounded-xl text-center text-xs text-red-200">
-            <p class="font-bold mb-1">Firebase Connection Permission Error</p>
-            <p class="text-slate-400 mb-2">${error.message}</p>
-            <p class="text-[11px] text-amber-300">Please go to Firebase Console &gt; Realtime Database &gt; Rules, set read/write to true and click Publish.</p>
-          </div>
-        `;
-      }
-      showToast("Firebase Error: " + error.message, "error");
-    }
-  );
+// Search input live filtering
+const searchInputEl = document.getElementById("input-search-users");
+if (searchInputEl) {
+  searchInputEl.addEventListener("input", (e) => {
+    searchQuery = (e.target.value || "").toLowerCase().trim();
+    renderUsersDashboard();
+  });
 }
 
-/**
- * Render the live user dashboard
- */
-function renderUserDirectory(userEntries) {
-  const container = document.getElementById("user-list");
-  if (!container) return;
+if (allUsersRef) {
+  onValue(allUsersRef, (snapshot) => {
+    const data = snapshot.val();
+    usersCache.clear();
 
-  if (userEntries.length === 0) {
-    container.innerHTML = `
-      <div class="py-12 text-center text-slate-500">
-        <p class="text-sm">No registered users in database yet.</p>
-      </div>
-    `;
-    return;
-  }
+    if (data) {
+      Object.keys(data).forEach((uid) => {
+        usersCache.set(uid, data[uid]);
+      });
+    }
+
+    renderUsersDashboard();
+  });
+}
+
+function renderUsersDashboard() {
+  const container = document.getElementById("users-list-container");
+  const countBadge = document.getElementById("user-count-badge");
+  const emptyState = document.getElementById("empty-state");
+  if (!container) return;
 
   container.innerHTML = "";
 
-  userEntries.forEach(([userId, userData]) => {
+  // Count active online users
+  let onlineCount = 0;
+  usersCache.forEach((user, uid) => {
+    if (uid !== myUserId && user.status === "online") onlineCount++;
+  });
+  if (countBadge) countBadge.textContent = `${onlineCount} Online`;
+
+  // Filter entries according to search query
+  const entries = Array.from(usersCache.entries()).filter(([userId]) => {
+    if (!searchQuery) return true;
+    return userId.toLowerCase().includes(searchQuery);
+  });
+
+  if (entries.length === 0) {
+    if (emptyState) emptyState.classList.remove("hidden");
+    return;
+  } else {
+    if (emptyState) emptyState.classList.add("hidden");
+  }
+
+  // Sort: Current user first, then Online users, then Offline
+  const sortedUsers = entries.sort(([idA, userA], [idB, userB]) => {
+    if (idA === myUserId) return -1;
+    if (idB === myUserId) return 1;
+    if (userA.status === "online" && userB.status !== "online") return -1;
+    if (userA.status !== "online" && userB.status === "online") return 1;
+    return (userB.last_seen || 0) - (userA.last_seen || 0);
+  });
+
+  sortedUsers.forEach(([userId, userData]) => {
     const isSelf = userId === myUserId;
     const isOnline = userData.status === "online";
     const lastSeenText = formatLastSeen(userData.last_seen);
 
     const card = document.createElement("div");
-    card.className = `flex items-center justify-between p-3.5 rounded-xl border transition-all ${
-      isSelf
-        ? "bg-slate-800/40 border-slate-700/60"
-        : isOnline
-        ? "bg-slate-800/80 border-slate-700/80 hover:border-emerald-500/50 shadow-sm"
-        : "bg-slate-900/40 border-slate-800/50 opacity-75"
+    card.className = `bg-slate-900 border rounded-2xl p-4 flex items-center justify-between transition-all duration-200 shadow-sm ${
+      isOnline
+        ? "border-emerald-500/30 hover:border-emerald-500/60 shadow-emerald-500/5 bg-slate-900/90"
+        : "border-slate-800/80 opacity-70"
     }`;
 
     card.innerHTML = `
       <div class="flex items-center gap-3">
-        <div class="relative w-9 h-9 rounded-full ${
-          isOnline ? "bg-emerald-500/20 text-emerald-400" : "bg-slate-800 text-slate-500"
-        } flex items-center justify-center font-mono font-bold text-xs">
-          ${userId.slice(-2)}
-          <span class="absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full border-2 border-slate-900 ${
-            isOnline ? "bg-emerald-500" : "bg-slate-500"
+        <div class="relative shrink-0">
+          <div class="w-11 h-11 rounded-2xl ${
+            isOnline ? "bg-emerald-500/15 text-emerald-400 border border-emerald-500/30" : "bg-slate-800 text-slate-500"
+          } flex items-center justify-center font-bold text-sm">
+            ${userId.slice(-4)}
+          </div>
+          <span class="absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-slate-900 ${
+            isOnline ? "bg-emerald-500 animate-pulse" : "bg-slate-600"
           }"></span>
         </div>
         <div>
-          <div class="flex items-center gap-2">
-            <span class="font-mono text-sm font-semibold ${isOnline ? "text-slate-100" : "text-slate-400"}">
-              ${userId}
-            </span>
+          <div class="flex items-center gap-1.5">
+            <span class="font-bold text-white text-sm tracking-tight">${userId}</span>
             ${
               isSelf
-                ? `<span class="text-[10px] bg-slate-700 text-slate-300 font-medium px-1.5 py-0.2 rounded">You</span>`
+                ? `<span class="text-[9px] bg-slate-800 text-emerald-400 font-bold px-1.5 py-0.5 rounded-full border border-slate-700">You</span>`
                 : ""
             }
           </div>
-          <div class="flex items-center gap-1.5 text-xs">
+          <div class="flex items-center gap-1.5 text-xs mt-0.5">
             ${
               isOnline
-                ? `<span class="text-emerald-400 font-medium flex items-center gap-1">
-                     <span class="text-emerald-400 text-xs">●</span> Online
+                ? `<span class="text-emerald-400 font-semibold text-[11px] flex items-center gap-1">
+                     <span class="text-emerald-400 text-[10px]">●</span> Online
                    </span>`
-                : `<span class="text-slate-500">● Offline • ${lastSeenText}</span>`
+                : `<span class="text-slate-500 text-[11px]">Offline • ${lastSeenText}</span>`
             }
           </div>
         </div>
@@ -251,17 +250,17 @@ function renderUserDirectory(userEntries) {
       <div>
         ${
           isSelf
-            ? `<span class="text-xs text-slate-500 font-mono italic px-3 py-1">Current Device</span>`
+            ? `<span class="text-[11px] text-slate-500 font-mono italic px-3 py-1">This Device</span>`
             : `<button
                 type="button"
                 data-target-user="${userId}"
-                class="call-user-btn cursor-pointer relative z-10 flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                class="call-user-btn cursor-pointer flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold transition-all active:scale-95 ${
                   isOnline
-                    ? "bg-emerald-600 hover:bg-emerald-500 text-white shadow-md shadow-emerald-600/20 active:scale-95"
+                    ? "bg-emerald-500 hover:bg-emerald-400 text-slate-950 shadow-md shadow-emerald-500/20"
                     : "bg-slate-800 text-slate-500 hover:bg-slate-700/60"
                 }">
                 <svg class="w-3.5 h-3.5 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" />
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" />
                 </svg>
                 <span class="pointer-events-none">Call</span>
               </button>`
@@ -283,30 +282,9 @@ function formatLastSeen(timestamp) {
 }
 
 // ==========================================
-// 3. WEBRTC P2P & CALL STATE MANAGEMENT
+// 3. AUDIO SYSTEM & SOUND SYNTHESIS
 // ==========================================
 
-// Global WebRTC State
-let peerConnection = null;
-let localMediaStream = null;
-let currentChannelName = null;
-let currentCallPartnerId = null;
-let currentCallRole = null; // 'caller' | 'callee'
-let isCallActive = false;
-let callTimerInterval = null;
-let callStartTime = null;
-let isMicMuted = false;
-
-// Google Public STUN Configuration (100% Free, Global, Zero-Certificate)
-const rtcConfig = {
-  iceServers: [
-    { urls: "stun:stun.l.google.com:19302" },
-    { urls: "stun:stun1.l.google.com:19302" },
-    { urls: "stun:stun2.l.google.com:19302" }
-  ]
-};
-
-// Audio context for synthesized ringback and ringing sounds
 let audioCtx = null;
 let ringtoneOscillator = null;
 
@@ -333,19 +311,22 @@ function playOutgoingRingback() {
 
     osc1.frequency.value = 440;
     osc2.frequency.value = 480;
+    osc1.type = "sine";
+    osc2.type = "sine";
 
+    gainNode.gain.setValueAtTime(0, ctx.currentTime);
     const now = ctx.currentTime;
-    gainNode.gain.setValueAtTime(0, now);
-    for (let i = 0; i < 15; i++) {
-      const cycleStart = now + i * 4;
-      gainNode.gain.setValueAtTime(0.08, cycleStart);
-      gainNode.gain.setValueAtTime(0.08, cycleStart + 1.5);
-      gainNode.gain.setValueAtTime(0, cycleStart + 1.51);
+    for (let i = 0; i < 20; i++) {
+      const t = now + i * 4.0;
+      gainNode.gain.setValueAtTime(0.12, t);
+      gainNode.gain.setValueAtTime(0.12, t + 1.8);
+      gainNode.gain.setValueAtTime(0, t + 1.85);
     }
 
     osc1.connect(gainNode);
     osc2.connect(gainNode);
     gainNode.connect(ctx.destination);
+
     osc1.start();
     osc2.start();
 
@@ -372,10 +353,13 @@ function playIncomingRingtone() {
     const osc = ctx.createOscillator();
     const gainNode = ctx.createGain();
 
+    osc.type = "triangle";
+    gainNode.gain.setValueAtTime(0, ctx.currentTime);
+
     const now = ctx.currentTime;
-    for (let i = 0; i < 15; i++) {
+    for (let i = 0; i < 20; i++) {
       const t = now + i * 2.5;
-      gainNode.gain.setValueAtTime(0.12, t);
+      gainNode.gain.setValueAtTime(0.2, t);
       osc.frequency.setValueAtTime(523.25, t);
       osc.frequency.setValueAtTime(659.25, t + 0.15);
       osc.frequency.setValueAtTime(783.99, t + 0.3);
@@ -405,10 +389,9 @@ function stopRingtone() {
   }
 }
 
-/**
- * Acquire local microphone with strict hardware constraints
- * (Suppress background rumble, echo loops, robotic clipping)
- */
+// Local Microphone acquisition with strict hardware constraints
+let localMediaStream = null;
+
 async function acquireLocalMicrophone() {
   if (localMediaStream) return localMediaStream;
 
@@ -429,8 +412,116 @@ async function acquireLocalMicrophone() {
 }
 
 // ==========================================
-// 4. CALL TRIGGER & SIGNALING (FIREBASE RTDB)
+// 4. AGORA RTC SDK v4 AUDIO INTEGRATION
 // ==========================================
+
+let agoraClient = null;
+let localAgoraAudioTrack = null;
+let isAgoraAudioActive = false;
+
+async function joinAgoraVoiceChannel(channelName) {
+  if (typeof AgoraRTC === "undefined") {
+    console.warn("[HomeCall] AgoraRTC SDK is not available.");
+    return false;
+  }
+
+  const appId = (CONFIG && CONFIG.AGORA_APP_ID) ? CONFIG.AGORA_APP_ID : "a6f0bbf1744f4ffe85275fcae3d8858b";
+  if (!appId || appId === "YOUR_AGORA_APP_ID") {
+    console.warn("[HomeCall] No valid Agora App ID found.");
+    return false;
+  }
+
+  try {
+    console.log("[HomeCall] Initializing Agora RTC client with App ID:", appId);
+    agoraClient = AgoraRTC.createClient({ mode: "rtc", codec: "vp8" });
+
+    // Handle remote participant audio
+    agoraClient.on("user-published", async (user, mediaType) => {
+      console.log("[HomeCall] Agora user-published:", user.uid, mediaType);
+      try {
+        await agoraClient.subscribe(user, mediaType);
+        if (mediaType === "audio") {
+          user.audioTrack.play();
+          isAgoraAudioActive = true;
+          stopRingtone();
+          updateCallStatusUI("Connected (Agora HD)", true);
+          console.log("[HomeCall] Remote audio playing via Agora SD-RTN!");
+        }
+      } catch (subErr) {
+        console.error("[HomeCall] Agora subscription error:", subErr);
+      }
+    });
+
+    agoraClient.on("user-unpublished", (user, mediaType) => {
+      console.log("[HomeCall] Agora user-unpublished:", user.uid, mediaType);
+    });
+
+    agoraClient.on("user-left", (user) => {
+      console.log("[HomeCall] Agora user left:", user.uid);
+      if (isCallActive) {
+        terminateCall(false);
+      }
+    });
+
+    // Join channel (token=null for testing mode)
+    await agoraClient.join(appId, channelName, null, null);
+    console.log("[HomeCall] Joined Agora channel:", channelName);
+
+    // Create high-quality Opus audio track
+    localAgoraAudioTrack = await AgoraRTC.createMicrophoneAudioTrack({
+      encoderConfig: "high_quality_stereo",
+      AEC: true,
+      ANS: true,
+      AGC: true
+    });
+
+    await agoraClient.publish([localAgoraAudioTrack]);
+    console.log("[HomeCall] Published local microphone to Agora!");
+    return true;
+  } catch (err) {
+    console.warn("[HomeCall] Agora RTC connection error:", err.message);
+    leaveAgoraVoiceChannel();
+    return false;
+  }
+}
+
+async function leaveAgoraVoiceChannel() {
+  isAgoraAudioActive = false;
+  if (localAgoraAudioTrack) {
+    try {
+      localAgoraAudioTrack.stop();
+      localAgoraAudioTrack.close();
+    } catch (e) {}
+    localAgoraAudioTrack = null;
+  }
+  if (agoraClient) {
+    try {
+      await agoraClient.leave();
+    } catch (e) {}
+    agoraClient = null;
+  }
+}
+
+// ==========================================
+// 5. CALL TRIGGER & SIGNALING (FIREBASE RTDB)
+// ==========================================
+
+let peerConnection = null;
+let currentChannelName = null;
+let currentCallPartnerId = null;
+let currentCallRole = null; // 'caller' | 'callee'
+let isCallActive = false;
+let callTimerInterval = null;
+let callStartTime = null;
+let isMicMuted = false;
+
+const rtcConfig = {
+  iceServers: [
+    { urls: "stun:stun.l.google.com:19302" },
+    { urls: "stun:stun1.l.google.com:19302" },
+    { urls: "stun:stun2.l.google.com:19302" }
+  ]
+};
 
 /**
  * Caller: Initiate call to target user
@@ -453,19 +544,16 @@ async function initiateCall(targetUserId) {
     return;
   }
 
-  // Immediately request microphone permission inside this user click gesture
   try {
     await acquireLocalMicrophone();
   } catch (micErr) {
-    console.error("[AnonCall] Mic permission error:", micErr);
+    console.error("[HomeCall] Mic error:", micErr);
     updateMicStatusUI("denied");
-    showToast("Microphone permission required! Please tap 'Allow' when prompted.", "error");
+    showToast("Microphone permission required to make a call.", "error");
     return;
   }
 
-  // Sort and join User IDs to create unique channel identifier
   const channelName = [myUserId, targetUserId].sort().join("-");
-
   currentChannelName = channelName;
   currentCallPartnerId = targetUserId;
   currentCallRole = "caller";
@@ -474,31 +562,30 @@ async function initiateCall(targetUserId) {
   showActiveCallUI(targetUserId, "Ringing...");
   playOutgoingRingback();
 
+  // 1. Connect Agora RTC Primary Channel
+  joinAgoraVoiceChannel(channelName).catch((e) => console.warn(e));
+
+  // 2. Setup WebRTC PeerConnection as Dual-Engine Redundancy
   try {
-    // 1. Create WebRTC Peer Connection
     peerConnection = new RTCPeerConnection(rtcConfig);
 
-    // Add local audio tracks to peer connection
     localMediaStream.getTracks().forEach((track) => {
       peerConnection.addTrack(track, localMediaStream);
     });
 
-    // Handle remote audio stream
     peerConnection.ontrack = (event) => {
-      const remoteStream = event.streams[0] || new MediaStream([event.track]);
-      const audioElement = document.getElementById("remote-audio-player");
-      if (audioElement) {
-        audioElement.srcObject = remoteStream;
-        audioElement.autoplay = true;
-        audioElement.muted = false;
-        audioElement.playsInline = true;
-        audioElement.play().catch((e) => console.warn("[AnonCall] Autoplay error:", e));
+      if (!isAgoraAudioActive) {
+        const remoteStream = event.streams[0] || new MediaStream([event.track]);
+        const audioElement = document.getElementById("remote-audio-player");
+        if (audioElement) {
+          audioElement.srcObject = remoteStream;
+          audioElement.play().catch(() => {});
+        }
+        stopRingtone();
+        updateCallStatusUI("Connected (Opus HD)", true);
       }
-      stopRingtone();
-      updateCallStatusUI("Connected (Opus HD)", true);
     };
 
-    // Gather ICE candidates and push to Firebase
     const callerCandidatesRef = ref(db, `calls/${targetUserId}/callerCandidates`);
     peerConnection.onicecandidate = (event) => {
       if (event.candidate) {
@@ -506,33 +593,23 @@ async function initiateCall(targetUserId) {
       }
     };
 
-    // 2. Create WebRTC Offer
-    const offer = await peerConnection.createOffer({
-      offerToReceiveAudio: true
-    });
+    const offer = await peerConnection.createOffer({ offerToReceiveAudio: true });
     await peerConnection.setLocalDescription(offer);
 
-    // 3. Write call offer to recipient's node in Firebase RTDB
     const callOfferRef = ref(db, `calls/${targetUserId}`);
     await set(callOfferRef, {
       caller: myUserId,
       recipient: targetUserId,
       channel: channelName,
       status: "ringing",
-      offer: {
-        type: offer.type,
-        sdp: offer.sdp
-      },
+      offer: { type: offer.type, sdp: offer.sdp },
       timestamp: Date.now()
     });
 
-    // Auto-remove offer if caller disconnects unexpectedly
     onDisconnect(callOfferRef).remove();
 
-    // 4. Listen for recipient answer on calls/${targetUserId}
     onValue(callOfferRef, async (snap) => {
       const data = snap.val();
-
       if (!data) {
         if (isCallActive && currentCallRole === "caller") {
           showToast("Call ended", "info");
@@ -559,7 +636,6 @@ async function initiateCall(targetUserId) {
       }
     });
 
-    // 5. Listen for Callee ICE candidates
     const calleeCandidatesRef = ref(db, `calls/${targetUserId}/calleeCandidates`);
     onChildAdded(calleeCandidatesRef, (snapshot) => {
       const candidateData = snapshot.val();
@@ -568,15 +644,12 @@ async function initiateCall(targetUserId) {
       }
     });
   } catch (err) {
-    console.error("[AnonCall] Signaling error:", err);
-    stopRingtone();
-    showToast("Call failed: " + err.message, "error");
-    terminateCall(false);
+    console.error("[HomeCall] Signaling error:", err);
   }
 }
 
 /**
- * Callee: Listen for incoming calls on `calls/${myUserId}`
+ * Callee: Listen for incoming calls
  */
 if (myIncomingCallRef) {
   onValue(myIncomingCallRef, (snapshot) => {
@@ -591,8 +664,6 @@ if (myIncomingCallRef) {
       currentCallPartnerId = data.caller;
       currentChannelName = data.channel;
       currentCallRole = "callee";
-
-      // Store offer for acceptance
       window._pendingIncomingCallData = data;
 
       showIncomingCallModal(data.caller);
@@ -615,47 +686,45 @@ async function acceptIncomingCall() {
   hideIncomingCallModal();
 
   const data = window._pendingIncomingCallData;
-  if (!data || !data.offer || !currentCallPartnerId) return;
+  if (!data || !currentCallPartnerId) return;
 
   isCallActive = true;
   showActiveCallUI(currentCallPartnerId, "Connecting...");
 
-  // Acquire microphone directly inside this Accept click gesture
   try {
     await acquireLocalMicrophone();
   } catch (micErr) {
-    console.error("[AnonCall] Mic error on accept:", micErr);
-    showToast("Microphone permission required to speak.", "error");
-    updateMicStatusUI("denied");
+    console.error("[HomeCall] Mic error on accept:", micErr);
+    showToast("Microphone permission required.", "error");
     terminateCall(true);
     return;
   }
 
+  // 1. Connect Agora RTC Primary Channel
+  const channelName = data.channel || [myUserId, currentCallPartnerId].sort().join("-");
+  joinAgoraVoiceChannel(channelName).catch((e) => console.warn(e));
+
+  // 2. Setup WebRTC PeerConnection as Dual-Engine Redundancy
   try {
-    // 1. Create WebRTC Peer Connection
     peerConnection = new RTCPeerConnection(rtcConfig);
 
-    // Add local tracks
     localMediaStream.getTracks().forEach((track) => {
       peerConnection.addTrack(track, localMediaStream);
     });
 
-    // Handle incoming remote audio
     peerConnection.ontrack = (event) => {
-      const remoteStream = event.streams[0] || new MediaStream([event.track]);
-      const audioElement = document.getElementById("remote-audio-player");
-      if (audioElement) {
-        audioElement.srcObject = remoteStream;
-        audioElement.autoplay = true;
-        audioElement.muted = false;
-        audioElement.playsInline = true;
-        audioElement.play().catch((e) => console.warn("[AnonCall] Autoplay error:", e));
+      if (!isAgoraAudioActive) {
+        const remoteStream = event.streams[0] || new MediaStream([event.track]);
+        const audioElement = document.getElementById("remote-audio-player");
+        if (audioElement) {
+          audioElement.srcObject = remoteStream;
+          audioElement.play().catch(() => {});
+        }
+        stopRingtone();
+        updateCallStatusUI("Connected (Opus HD)", true);
       }
-      stopRingtone();
-      updateCallStatusUI("Connected (Opus HD)", true);
     };
 
-    // Gather Callee ICE candidates
     const calleeCandidatesRef = ref(db, `calls/${myUserId}/calleeCandidates`);
     peerConnection.onicecandidate = (event) => {
       if (event.candidate) {
@@ -663,25 +732,17 @@ async function acceptIncomingCall() {
       }
     };
 
-    // 2. Set Remote Description (Caller's Offer)
     await peerConnection.setRemoteDescription(new RTCSessionDescription(data.offer));
-
-    // 3. Create WebRTC Answer
     const answer = await peerConnection.createAnswer();
     await peerConnection.setLocalDescription(answer);
 
-    // 4. Send Answer to Firebase RTDB
     await update(ref(db, `calls/${myUserId}`), {
-      answer: {
-        type: answer.type,
-        sdp: answer.sdp
-      },
+      answer: { type: answer.type, sdp: answer.sdp },
       status: "accepted"
     });
 
     startCallTimer();
 
-    // 5. Listen for Caller ICE candidates
     const callerCandidatesRef = ref(db, `calls/${myUserId}/callerCandidates`);
     onChildAdded(callerCandidatesRef, (snapshot) => {
       const candidateData = snapshot.val();
@@ -690,11 +751,11 @@ async function acceptIncomingCall() {
       }
     });
   } catch (err) {
-    console.error("[AnonCall] Error accepting call:", err);
-    showToast("Failed to connect call: " + err.message, "error");
-    terminateCall(true);
+    console.error("[HomeCall] Error accepting WebRTC call:", err);
   }
 }
+window.acceptIncomingCall = acceptIncomingCall;
+window.handleIncomingCallFromNative = acceptIncomingCall;
 
 /**
  * Callee declines call
@@ -726,6 +787,9 @@ async function terminateCall(notifyPeer = true) {
   stopRingtone();
   stopCallTimer();
 
+  // Close Agora RTC Channel
+  leaveAgoraVoiceChannel();
+
   // Close WebRTC PeerConnection
   if (peerConnection) {
     try {
@@ -744,13 +808,11 @@ async function terminateCall(notifyPeer = true) {
     localMediaStream = null;
   }
 
-  // Clear audio element
   const audioElement = document.getElementById("remote-audio-player");
   if (audioElement) {
     audioElement.srcObject = null;
   }
 
-  // Notify peer in Firebase RTDB
   if (notifyPeer && db) {
     try {
       if (currentCallRole === "caller" && currentCallPartnerId) {
@@ -775,87 +837,57 @@ async function terminateCall(notifyPeer = true) {
 }
 
 /**
- * Toggle Microphone Mute / Unmute
+ * Toggle Microphone Mute
  */
 function toggleMic() {
-  if (!localMediaStream) return;
-
   isMicMuted = !isMicMuted;
-  localMediaStream.getAudioTracks().forEach((track) => {
-    track.enabled = !isMicMuted;
-  });
 
-  const iconOn = document.getElementById("icon-mic-on");
-  const iconOff = document.getElementById("icon-mic-off");
-  const label = document.getElementById("label-toggle-mic");
-  const btn = document.getElementById("btn-toggle-mic");
-
-  if (isMicMuted) {
-    iconOn?.classList.add("hidden");
-    iconOff?.classList.remove("hidden");
-    if (label) label.textContent = "Unmute";
-    btn?.classList.add("bg-red-500/20", "text-red-400", "border", "border-red-500/40");
-    btn?.classList.remove("bg-slate-700", "text-slate-200");
-    showToast("Microphone muted", "info");
-  } else {
-    iconOn?.classList.remove("hidden");
-    iconOff?.classList.add("hidden");
-    if (label) label.textContent = "Mute";
-    btn?.classList.remove("bg-red-500/20", "text-red-400", "border", "border-red-500/40");
-    btn?.classList.add("bg-slate-700", "text-slate-200");
-    showToast("Microphone unmuted", "info");
+  // Toggle Agora mic track
+  if (localAgoraAudioTrack) {
+    try {
+      localAgoraAudioTrack.setEnabled(!isMicMuted);
+    } catch (e) {}
   }
-}
 
-function resetMicToggleButton() {
-  document.getElementById("icon-mic-on")?.classList.remove("hidden");
-  document.getElementById("icon-mic-off")?.classList.add("hidden");
-  const label = document.getElementById("label-toggle-mic");
-  if (label) label.textContent = "Mute";
-  const btn = document.getElementById("btn-toggle-mic");
-  if (btn) {
-    btn.classList.remove("bg-red-500/20", "text-red-400", "border", "border-red-500/40");
-    btn.classList.add("bg-slate-700", "text-slate-200");
+  // Toggle WebRTC mic track
+  if (localMediaStream) {
+    localMediaStream.getAudioTracks().forEach((track) => {
+      track.enabled = !isMicMuted;
+    });
   }
+
+  updateMicToggleUI(isMicMuted);
 }
 
 // ==========================================
-// 5. CALL UI HELPERS & NOTIFICATIONS
+// 6. UI HELPERS & TIMERS
 // ==========================================
 
 function showActiveCallUI(partnerId, statusText) {
   const modal = document.getElementById("active-call-modal");
-  const partnerIdEl = document.getElementById("call-partner-id");
+  const partnerEl = document.getElementById("call-partner-id");
   const statusEl = document.getElementById("call-status-label");
-  const timerEl = document.getElementById("call-timer");
 
-  if (partnerIdEl) partnerIdEl.textContent = partnerId;
-  if (statusEl) statusEl.textContent = statusText;
-  if (timerEl) timerEl.textContent = "00:00";
   if (modal) modal.classList.remove("hidden");
-}
-
-function updateCallStatusUI(text, isConnected) {
-  const statusEl = document.getElementById("call-status-label");
-  if (statusEl) {
-    statusEl.textContent = text;
-    if (isConnected) statusEl.className = "text-xs text-emerald-400 font-semibold";
-  }
+  if (partnerEl) partnerEl.textContent = partnerId;
+  if (statusEl) statusEl.textContent = statusText;
 }
 
 function hideActiveCallUI() {
-  document.getElementById("active-call-modal")?.classList.add("hidden");
+  const modal = document.getElementById("active-call-modal");
+  if (modal) modal.classList.add("hidden");
 }
 
-function showIncomingCallModal(callerId) {
-  const modal = document.getElementById("incoming-call-modal");
-  const callerEl = document.getElementById("incoming-caller-id");
-  if (callerEl) callerEl.textContent = callerId;
-  if (modal) modal.classList.remove("hidden");
-}
+function updateCallStatusUI(statusText, isConnected = false) {
+  const statusEl = document.getElementById("call-status-label");
+  const badgeEl = document.getElementById("call-quality-badge");
 
-function hideIncomingCallModal() {
-  document.getElementById("incoming-call-modal")?.classList.add("hidden");
+  if (statusEl) statusEl.textContent = statusText;
+  if (badgeEl) {
+    if (isConnected) {
+      badgeEl.className = "text-[10px] bg-emerald-950 text-emerald-400 font-mono font-bold px-2 py-0.5 rounded-full border border-emerald-500/40 animate-pulse";
+    }
+  }
 }
 
 function startCallTimer() {
@@ -864,10 +896,11 @@ function startCallTimer() {
   const timerEl = document.getElementById("call-timer");
 
   callTimerInterval = setInterval(() => {
-    const elapsed = Math.floor((Date.now() - callStartTime) / 1000);
-    const mins = String(Math.floor(elapsed / 60)).padStart(2, "0");
-    const secs = String(elapsed % 60).padStart(2, "0");
-    if (timerEl) timerEl.textContent = `${mins}:${secs}`;
+    if (!callStartTime || !timerEl) return;
+    const elapsedSec = Math.floor((Date.now() - callStartTime) / 1000);
+    const mins = String(Math.floor(elapsedSec / 60)).padStart(2, "0");
+    const secs = String(elapsedSec % 60).padStart(2, "0");
+    timerEl.textContent = `${mins}:${secs}`;
   }, 1000);
 }
 
@@ -877,200 +910,186 @@ function stopCallTimer() {
     callTimerInterval = null;
   }
   callStartTime = null;
+  const timerEl = document.getElementById("call-timer");
+  if (timerEl) timerEl.textContent = "00:00";
 }
 
-// Non-intrusive Toast Notifications
+function showIncomingCallModal(callerId) {
+  const modal = document.getElementById("incoming-call-modal");
+  const callerEl = document.getElementById("incoming-caller-id");
+  if (modal) modal.classList.remove("hidden");
+  if (callerEl) callerEl.textContent = callerId;
+}
+
+function hideIncomingCallModal() {
+  const modal = document.getElementById("incoming-call-modal");
+  if (modal) modal.classList.add("hidden");
+}
+
+function updateMicToggleUI(muted) {
+  const labelEl = document.getElementById("label-toggle-mic");
+  const iconOn = document.getElementById("icon-mic-on");
+  const iconOff = document.getElementById("icon-mic-off");
+  const btn = document.getElementById("btn-toggle-mic");
+
+  if (muted) {
+    if (labelEl) labelEl.textContent = "Unmute";
+    if (iconOn) iconOn.classList.add("hidden");
+    if (iconOff) iconOff.classList.remove("hidden");
+    if (btn) btn.className = "flex items-center gap-1.5 px-4 py-2.5 rounded-2xl bg-red-950/80 border border-red-500/40 text-red-200 transition-all font-semibold text-xs active:scale-95";
+  } else {
+    if (labelEl) labelEl.textContent = "Mute";
+    if (iconOn) iconOn.classList.remove("hidden");
+    if (iconOff) iconOff.classList.add("hidden");
+    if (btn) btn.className = "flex items-center gap-1.5 px-4 py-2.5 rounded-2xl bg-slate-700/80 hover:bg-slate-600 text-slate-200 transition-all font-semibold text-xs active:scale-95";
+  }
+}
+
+function resetMicToggleButton() {
+  isMicMuted = false;
+  updateMicToggleUI(false);
+}
+
+function updateMicStatusUI(status) {
+  const dot = document.getElementById("mic-status-dot");
+  const text = document.getElementById("mic-status-text");
+
+  if (status === "granted") {
+    if (dot) dot.className = "w-2 h-2 rounded-full bg-emerald-400";
+    if (text) text.textContent = "Mic Ready 🎙️";
+  } else if (status === "denied") {
+    if (dot) dot.className = "w-2 h-2 rounded-full bg-red-400";
+    if (text) text.textContent = "Mic Blocked ❌";
+  }
+}
+
 function showToast(message, type = "info") {
   const container = document.getElementById("toast-container");
   if (!container) return;
 
   const toast = document.createElement("div");
-  toast.className = `pointer-events-auto flex items-center gap-2.5 px-4 py-3 rounded-xl shadow-xl text-xs font-medium border transition-all duration-300 transform translate-y-[-10px] opacity-0 ${
-    type === "warning"
-      ? "bg-amber-950/90 border-amber-500/40 text-amber-200"
-      : type === "error"
-      ? "bg-red-950/90 border-red-500/40 text-red-200"
-      : type === "success"
-      ? "bg-emerald-950/90 border-emerald-500/40 text-emerald-200"
-      : "bg-slate-800/95 border-slate-700 text-slate-200"
-  }`;
-
-  const iconSvg =
-    type === "warning"
-      ? `<svg class="w-4 h-4 text-amber-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>`
-      : type === "error"
-      ? `<svg class="w-4 h-4 text-red-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>`
-      : type === "success"
-      ? `<svg class="w-4 h-4 text-emerald-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>`
-      : `<svg class="w-4 h-4 text-blue-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>`;
-
-  toast.innerHTML = `${iconSvg}<span class="flex-1">${message}</span>`;
-  container.appendChild(toast);
-
-  requestAnimationFrame(() => toast.classList.remove("translate-y-[-10px]", "opacity-0"));
-
-  setTimeout(() => {
-    toast.classList.add("opacity-0", "translate-y-[-5px]");
-    setTimeout(() => toast.remove(), 300);
-  }, 3500);
-}
-
-// ==========================================
-// 6. UI EVENT ATTACHMENTS
-// ==========================================
-
-const endCallBtn = document.getElementById("btn-end-call");
-if (endCallBtn) {
-  endCallBtn.addEventListener("click", () => terminateCall(true));
-}
-
-const acceptCallBtn = document.getElementById("btn-accept-call");
-if (acceptCallBtn) {
-  acceptCallBtn.addEventListener("click", acceptIncomingCall);
-}
-
-const declineCallBtn = document.getElementById("btn-decline-call");
-if (declineCallBtn) {
-  declineCallBtn.addEventListener("click", declineIncomingCall);
-}
-
-const toggleMicBtn = document.getElementById("btn-toggle-mic");
-if (toggleMicBtn) {
-  toggleMicBtn.addEventListener("click", toggleMic);
-}
-
-// Delegated event listener for user directory call buttons
-const userListContainer = document.getElementById("user-list");
-if (userListContainer) {
-  userListContainer.addEventListener("click", (e) => {
-    const btn = e.target.closest(".call-user-btn");
-    if (!btn) return;
-    const targetId = btn.getAttribute("data-target-user");
-    if (targetId) {
-      initiateCall(targetId);
-    }
-  });
-}
-
-// Microphone Permission Helpers & Status Indicator
-const checkMicBtn = document.getElementById("btn-check-mic");
-
-function updateMicStatusUI(state) {
-  const dot = document.getElementById("mic-status-dot");
-  const text = document.getElementById("mic-status-text");
-  if (!dot || !text) return;
-
-  if (state === "granted") {
-    dot.className = "w-2 h-2 rounded-full bg-emerald-400";
-    text.textContent = "Mic Ready ✓";
-  } else if (state === "denied") {
-    dot.className = "w-2 h-2 rounded-full bg-red-500";
-    text.textContent = "Mic Blocked ✕";
-  } else {
-    dot.className = "w-2 h-2 rounded-full bg-amber-400 animate-pulse";
-    text.textContent = "Enable Mic 🎤";
-  }
-}
-
-async function requestMicPermission() {
-  try {
-    await acquireLocalMicrophone();
-    updateMicStatusUI("granted");
-    showToast("Microphone ready! 🎤", "success");
-  } catch (err) {
-    console.error("Mic check error:", err);
-    updateMicStatusUI("denied");
-    showToast("Microphone permission was denied. Please allow microphone in browser.", "error");
-  }
-}
-
-checkMicBtn?.addEventListener("click", requestMicPermission);
-
-// Check permission status on startup
-if (navigator.permissions && navigator.permissions.query) {
-  navigator.permissions.query({ name: "microphone" }).then((status) => {
-    updateMicStatusUI(status.state);
-    status.onchange = () => updateMicStatusUI(status.state);
-  }).catch(() => {});
-}
-
-// Credentials Setup Modal Handlers
-const settingsModal = document.getElementById("settings-modal");
-const openSettingsBtn = document.getElementById("btn-open-settings");
-const warningSetupBtn = document.getElementById("btn-warning-setup");
-const closeSettingsBtn = document.getElementById("btn-close-settings");
-const cancelSettingsBtn = document.getElementById("btn-cancel-settings");
-const saveSettingsBtn = document.getElementById("btn-save-settings");
-const resetConfigBtn = document.getElementById("btn-reset-config");
-const copyRulesBtn = document.getElementById("btn-copy-rules");
-
-function openSettingsModal() {
-  const inputFirebase = document.getElementById("input-firebase-config");
-
-  if (inputFirebase && CONFIG.FIREBASE_CONFIG?.apiKey !== "YOUR_API_KEY") {
-    inputFirebase.value = JSON.stringify(CONFIG.FIREBASE_CONFIG, null, 2);
-  }
-  if (settingsModal) settingsModal.classList.remove("hidden");
-}
-
-function closeSettingsModal() {
-  if (settingsModal) settingsModal.classList.add("hidden");
-}
-
-openSettingsBtn?.addEventListener("click", openSettingsModal);
-warningSetupBtn?.addEventListener("click", openSettingsModal);
-closeSettingsBtn?.addEventListener("click", closeSettingsModal);
-cancelSettingsBtn?.addEventListener("click", closeSettingsModal);
-
-copyRulesBtn?.addEventListener("click", () => {
-  const rules = JSON.stringify(
-    {
-      rules: {
-        users: { ".read": true, "$u": { ".write": true } },
-        calls: { ".read": true, "$u": { ".write": true } }
-      }
-    },
-    null,
-    2
-  );
-  navigator.clipboard.writeText(rules).then(() => {
-    showToast("Firebase Rules copied to clipboard!", "success");
-  });
-});
-
-saveSettingsBtn?.addEventListener("click", () => {
-  const rawFirebase = document.getElementById("input-firebase-config")?.value.trim();
-
-  let parsedFirebase = null;
-  try {
-    let cleanJson = rawFirebase;
-    if (cleanJson.startsWith("const firebaseConfig =") || cleanJson.startsWith("var firebaseConfig =")) {
-      cleanJson = cleanJson.replace(/^[^{]*/, "").replace(/;?\s*$/, "");
-    }
-    cleanJson = cleanJson.replace(/([{,]\s*)([a-zA-Z0-9_]+)\s*:/g, '$1"$2":');
-    parsedFirebase = JSON.parse(cleanJson);
-  } catch (err) {
-    showToast("Invalid Firebase Config format. Please paste valid JSON.", "error");
-    return;
-  }
-
-  if (!parsedFirebase.apiKey || !parsedFirebase.databaseURL) {
-    showToast("Firebase Config must include apiKey and databaseURL", "warning");
-    return;
-  }
-
-  const newConfig = {
-    AGORA_APP_ID: CONFIG.AGORA_APP_ID || "",
-    FIREBASE_CONFIG: parsedFirebase
+  const bgStyles = {
+    info: "bg-slate-900 border-slate-700 text-slate-200",
+    success: "bg-emerald-950 border-emerald-500/60 text-emerald-200",
+    warning: "bg-amber-950 border-amber-500/60 text-amber-200",
+    error: "bg-red-950 border-red-500/60 text-red-200"
   };
 
-  localStorage.setItem("app_credentials_override", JSON.stringify(newConfig));
-  showToast("Credentials saved! Connecting...", "success");
-  setTimeout(() => window.location.reload(), 600);
-});
+  toast.className = `border rounded-2xl px-4 py-3 text-xs shadow-2xl flex items-center justify-between gap-3 pointer-events-auto transition-all duration-300 transform translate-y-2 opacity-0 ${
+    bgStyles[type] || bgStyles.info
+  }`;
+  toast.innerHTML = `
+    <span>${message}</span>
+    <button class="text-slate-400 hover:text-white ml-2 text-base leading-none">✕</button>
+  `;
 
-resetConfigBtn?.addEventListener("click", () => {
-  localStorage.removeItem("app_credentials_override");
-  showToast("Reset to config.js defaults! Reloading...", "info");
-  setTimeout(() => window.location.reload(), 600);
+  toast.querySelector("button").onclick = () => {
+    toast.remove();
+  };
+
+  container.appendChild(toast);
+  requestAnimationFrame(() => {
+    toast.classList.remove("translate-y-2", "opacity-0");
+  });
+
+  setTimeout(() => {
+    if (toast.parentElement) {
+      toast.classList.add("opacity-0", "translate-y-2");
+      setTimeout(() => toast.remove(), 300);
+    }
+  }, 4000);
+}
+
+// ==========================================
+// 7. EVENT LISTENERS
+// ==========================================
+
+document.addEventListener("DOMContentLoaded", () => {
+  // Call user click delegation
+  const listContainer = document.getElementById("users-list-container");
+  if (listContainer) {
+    listContainer.addEventListener("click", (e) => {
+      const btn = e.target.closest(".call-user-btn");
+      if (!btn) return;
+      const targetId = btn.getAttribute("data-target-user");
+      if (targetId) {
+        initiateCall(targetId);
+      }
+    });
+  }
+
+  // Mic check button
+  const checkMicBtn = document.getElementById("btn-check-mic");
+  if (checkMicBtn) {
+    checkMicBtn.addEventListener("click", async () => {
+      try {
+        await acquireLocalMicrophone();
+        showToast("Microphone is active and ready!", "success");
+      } catch (err) {
+        showToast("Microphone error: " + err.message, "error");
+      }
+    });
+  }
+
+  // Active call controls
+  const endCallBtn = document.getElementById("btn-end-call");
+  if (endCallBtn) endCallBtn.addEventListener("click", () => terminateCall(true));
+
+  const toggleMicBtn = document.getElementById("btn-toggle-mic");
+  if (toggleMicBtn) toggleMicBtn.addEventListener("click", toggleMic);
+
+  // Incoming call modal buttons
+  const acceptBtn = document.getElementById("btn-accept-call");
+  if (acceptBtn) acceptBtn.addEventListener("click", acceptIncomingCall);
+
+  const declineBtn = document.getElementById("btn-decline-call");
+  if (declineBtn) declineBtn.addEventListener("click", declineIncomingCall);
+
+  // Settings modal
+  const openSettingsBtn = document.getElementById("btn-open-settings");
+  const warningSetupBtn = document.getElementById("btn-warning-setup");
+  const closeSettingsBtn = document.getElementById("btn-close-settings");
+  const settingsModal = document.getElementById("settings-modal");
+  const saveSettingsBtn = document.getElementById("btn-save-settings");
+  const resetCredsBtn = document.getElementById("btn-reset-credentials");
+  const inputAgora = document.getElementById("input-agora-app-id");
+  const inputFirebase = document.getElementById("input-firebase-config");
+
+  function openSettings() {
+    if (!settingsModal) return;
+    if (inputAgora) inputAgora.value = CONFIG.AGORA_APP_ID || "";
+    if (inputFirebase) inputFirebase.value = JSON.stringify(CONFIG.FIREBASE_CONFIG, null, 2);
+    settingsModal.classList.remove("hidden");
+  }
+
+  if (openSettingsBtn) openSettingsBtn.addEventListener("click", openSettings);
+  if (warningSetupBtn) warningSetupBtn.addEventListener("click", openSettings);
+  if (closeSettingsBtn) closeSettingsBtn.addEventListener("click", () => settingsModal.classList.add("hidden"));
+
+  if (saveSettingsBtn) {
+    saveSettingsBtn.addEventListener("click", () => {
+      try {
+        const newAgora = inputAgora.value.trim();
+        const newFirebase = JSON.parse(inputFirebase.value.trim());
+
+        const newCfg = {
+          AGORA_APP_ID: newAgora,
+          FIREBASE_CONFIG: newFirebase
+        };
+        localStorage.setItem("app_credentials_override", JSON.stringify(newCfg));
+        showToast("Settings saved! Reloading...", "success");
+        setTimeout(() => window.location.reload(), 1000);
+      } catch (err) {
+        showToast("Invalid JSON in Firebase config", "error");
+      }
+    });
+  }
+
+  if (resetCredsBtn) {
+    resetCredsBtn.addEventListener("click", () => {
+      localStorage.removeItem("app_credentials_override");
+      showToast("Reset to defaults! Reloading...", "info");
+      setTimeout(() => window.location.reload(), 1000);
+    });
+  }
 });

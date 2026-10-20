@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>Privacy Policy — HomeCall</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-950 text-slate-200 min-h-screen p-4 sm:p-8 flex flex-col items-center">
+  <div class="max-w-2xl w-full bg-slate-900 border border-slate-800 rounded-3xl p-6 sm:p-10 shadow-2xl space-y-6">
+    <div class="flex items-center gap-3 border-b border-slate-800 pb-4">
+      <div class="w-10 h-10 rounded-2xl bg-emerald-500/20 flex items-center justify-center text-emerald-400 font-bold text-xl">
+        📞
+      </div>
+      <div>
+        <h1 class="text-xl font-bold text-white">HomeCall Privacy Policy</h1>
+        <p class="text-xs text-slate-400">Last updated: October 2026</p>
+      </div>
+    </div>
+
+    <section class="space-y-3">
+      <h2 class="text-base font-semibold text-emerald-400">1. Zero-Login & Anonymity</h2>
+      <p class="text-sm text-slate-300 leading-relaxed">
+        HomeCall does not collect, store, or require any personally identifiable information (PII). No phone numbers, email addresses, names, contacts, or passwords are ever requested or stored. Each user is assigned an anonymous, random session identifier (e.g. <code>User-XXXXXX</code>) generated locally on their device.
+      </p>
+    </section>
+
+    <section class="space-y-3">
+      <h2 class="text-base font-semibold text-emerald-400">2. Microphone & Audio Usage</h2>
+      <p class="text-sm text-slate-300 leading-relaxed">
+        The microphone permission (<code>RECORD_AUDIO</code>) is used exclusively for live, real-time voice communication during active voice calls. Voice audio is streamed directly in real-time via Agora RTC SDK and WebRTC with hardware noise suppression, acoustic echo cancellation, and auto-gain control. Voice data is never recorded, never stored on any server, and never shared with any third party.
+      </p>
+    </section>
+
+    <section class="space-y-3">
+      <h2 class="text-base font-semibold text-emerald-400">3. Real-Time Signaling & Presence</h2>
+      <p class="text-sm text-slate-300 leading-relaxed">
+        Firebase Realtime Database is used strictly for call signaling (notifying when an incoming call arrives and exchanging audio session parameters) and temporary presence (online/offline status). Signal data is automatically removed when a call ends or when the user goes offline.
+      </p>
+    </section>
+
+    <section class="space-y-3">
+      <h2 class="text-base font-semibold text-emerald-400">4. Background Service & Notifications</h2>
+      <p class="text-sm text-slate-300 leading-relaxed">
+        The app uses a foreground service (<code>FOREGROUND_SERVICE_DATA_SYNC</code>) and notification permission (<code>POST_NOTIFICATIONS</code>) to maintain continuous reachability for incoming calls when the device is locked or minimized, displaying a high-priority incoming call banner with ringtone.
+      </p>
+    </section>
+
+    <section class="space-y-3">
+      <h2 class="text-base font-semibold text-emerald-400">5. Contact Information</h2>
+      <p class="text-sm text-slate-300 leading-relaxed">
+        If you have any questions about this Privacy Policy, you can reach out via the official project repository:
+        <a href="https://github.com/mrdkpandey2010-eng/homecall" class="text-emerald-400 underline block mt-1">https://github.com/mrdkpandey2010-eng/homecall</a>
+      </p>
+    </section>
+
+    <div class="pt-4 border-t border-slate-800 text-center">
+      <a href="index.html" class="inline-block px-6 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-sm transition-colors">
+        Back to App
+      </a>
+    </div>
+  </div>
+</body>
+</html>

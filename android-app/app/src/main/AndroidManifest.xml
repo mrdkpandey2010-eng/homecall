@@ -2,14 +2,14 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- Essential Network & Calling Permissions -->
+    <!-- Essential Network & Audio Calling Permissions -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     
-    <!-- 24/7 Permanent Background Execution & Call Receivers -->
+    <!-- 24/7 Background Call Signaling Service -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
@@ -48,7 +48,7 @@
             </intent-filter>
         </activity>
 
-        <!-- WhatsApp-Style Full Screen Incoming Call Dialog / Activity -->
+        <!-- WhatsApp-Style Full Screen Incoming Call Screen -->
         <activity
             android:name=".IncomingCallActivity"
             android:exported="false"
@@ -62,7 +62,11 @@
         <service
             android:name=".HomeCallService"
             android:exported="false"
-            android:foregroundServiceType="dataSync" />
+            android:foregroundServiceType="dataSync">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Realtime signaling for incoming voice calls" />
+        </service>
 
         <!-- Auto-restart on Device Boot -->
         <receiver
